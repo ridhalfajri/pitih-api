@@ -628,6 +628,11 @@ def parse_bank_email_deterministic(
         if merchant and merchant != "-":
             type_label = f" ({transfer_type})" if transfer_type and transfer_type.lower() != "transfer" else ""
             catatan = f"Transfer ke {merchant} — {remarks}" if remarks else f"Transfer ke {merchant}{type_label}"
+    ewallet_m = re.search(r"e-wallet\s*-\s*([A-Za-z0-9_]+)", body_text, re.IGNORECASE)
+    if ewallet_m:
+        ew_name = ewallet_m.group(1).strip()
+        merchant = "ShopeePay" if ew_name.lower() in ("shopeepay", "shopee") else (ew_name.upper() if ew_name.lower() in ("ovo", "dana", "gopay") else ew_name.capitalize())
+        catatan = f"Top Up e-Wallet - {merchant}"
     if admin_fee > 0:
         fmt_fee = f"Rp {admin_fee:,.0f}".replace(",", ".")
         catatan = f"{catatan} (+ Biaya Admin {fmt_fee})"

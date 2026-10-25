@@ -553,21 +553,6 @@ def detect_destination_account(
     digits_found = re.findall(r"\b(\d{4,16})\b", full_probe)
     masked_digits = re.findall(r"\*{2,}(\d{2,4})", full_probe)
 
-    # 1. Match 4-digit no_rekening / HP in text
-    for canon_acc, r_data in registered_map.items():
-        if canon_acc == src_norm:
-            continue
-        no_rek = str(r_data.get("no_rekening") or "").strip()
-        if no_rek and len(no_rek) >= 4:
-            last4 = no_rek[-4:]
-            if any(d == no_rek or d.endswith(last4) or d == last4 for d in digits_found):
-                return canon_acc
-            if any(last4.endswith(m) for m in masked_digits if len(m) >= 2):
-                return canon_acc
-
-    merchant_low = (merchant or "").lower()
-    catatan_low = (catatan or "").lower()
-
     account_keywords: Dict[str, List[str]] = {
         "OVO": ["ovo"],
         "Seabank": ["seabank", "bank seabank", "bank seabank indonesia"],
@@ -579,8 +564,36 @@ def detect_destination_account(
         "Jago": ["jago", "bank jago"],
         "GoPay": ["gopay", "gojek"],
         "DANA": ["dana"],
+        "ShopeePay": ["shopeepay", "shopee"],
     }
 
+    # If the transaction explicitly mentions another external e-wallet brand not in registered_map,
+    # prevent false matching to an internal account (e.g. ShopeePay top up must not match OVO)
+    if any(k in full_probe for k in ("shopeepay", "shopee", "linkaja", "astrapay", "isaku")):
+        if "ShopeePay" not in registered_map:
+            return None
+
+    # 1. Match 4-digit no_rekening / HP in text
+    for canon_acc, r_data in registered_map.items():
+        if canon_acc == src_norm:
+            continue
+        no_rek = str(r_data.get("no_rekening") or "").strip()
+        if no_rek and len(no_rek) >= 4:
+            last4 = no_rek[-4:]
+            has_num_match = (
+                any(d == no_rek or d.endswith(last4) or d == last4 for d in digits_found)
+                or any(last4.endswith(m) for m in masked_digits if len(m) >= 2)
+            )
+            if has_num_match:
+                # If canon_acc is an e-wallet (e.g. OVO, GoPay, DANA), DO NOT match purely on 4-digit phone number
+                # unless the specific e-wallet brand keyword is ALSO present in the probe,
+                # because the user's phone number is shared across multiple e-wallets!
+                if canon_acc in ("OVO", "GoPay", "DANA", "ShopeePay", "LinkAja"):
+                    kws = account_keywords.get(canon_acc, [canon_acc.lower()])
+                    if any(kw in full_probe for kw in kws):
+                        return canon_acc
+                else:
+                    return canon_acc
     # 2. Check merchant text
     for canon_acc in registered_map.keys():
         if canon_acc == src_norm:
