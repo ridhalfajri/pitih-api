@@ -154,9 +154,13 @@ def health():
     return {"status": "ok", "service": "pitih-api", "timestamp": datetime.now().isoformat()}
 @app.get("/api/drive/status")
 def drive_status():
+    b_status = get_backup_status()
+    latest_bk = b_status.get("latest_drive_backup")
     return {
         "connected": is_drive_connected(),
-        "folder_id": os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+        "folder_id": os.getenv("GOOGLE_DRIVE_FOLDER_ID", ""),
+        "total_backups": b_status.get("drive_backups_count", 0),
+        "latest_backup_time": latest_bk.get("createdTime") if isinstance(latest_bk, dict) else None,
     }
 
 @app.get("/api/auth/login")
@@ -808,26 +812,6 @@ async def email_simulate(payload: EmailWebhookPayload):
         body_text=payload.body_text,
         body_html=payload.body_html,
         received_at=payload.received_at,
-    )
-
-@app.get("/api/backup/status")
-def backup_status():
-    return get_backup_status()
-
-@app.post("/api/backup/now")
-def backup_now():
-    return perform_database_backup(upload_drive=True)
-
-@app.get("/api/backup/download")
-def backup_download():
-    filepath = get_latest_backup_filepath()
-    if not filepath or not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="File backup database tidak ditemukan")
-    filename = os.path.basename(filepath)
-    return FileResponse(
-        path=filepath,
-        filename=filename,
-        media_type="application/x-sqlite3",
     )
 
 class BudgetUpsertPayload(BaseModel):
