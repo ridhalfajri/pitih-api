@@ -316,9 +316,15 @@ async def process_photo_message(message: dict):
         # Scan with AI
         extracted = await extract_receipt_data(local_filepath)
         
-        tanggal = extracted.get("tanggal", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        now_dt = datetime.now()
+        tanggal = extracted.get("tanggal", now_dt.strftime("%Y-%m-%d %H:%M:%S"))
+        # If time is 12:00:00 (default fallback when receipt only showed date), use current time
+        if tanggal.endswith("12:00:00"):
+            tanggal = f"{tanggal[:10]} {now_dt.strftime('%H:%M:%S')}"
         jenis = extracted.get("jenis", "keluar")
         kategori = extracted.get("kategori", "Lainnya")
+        if jenis == "masuk" and kategori in ("Lainnya", "Gaji / Pemasukan"):
+            kategori = infer_category(merchant, catatan, jenis)
         nominal = float(extracted.get("nominal", 0))
         akun = extracted.get("akun", "Bank")
         merchant = extracted.get("merchant", "-")
@@ -385,7 +391,7 @@ async def process_photo_message(message: dict):
                         conn.close()
             else:
                 dest_test = detect_destination_account(akun, f"{catatan} {merchant}", merchant, catatan)
-                if dest_test or any(kw in f"{catatan} {merchant}".lower() for kw in ("seabank", "bsi", "bca", "mandiri", "bri", "ovo", "gopay", "dana", "pindah dana")):
+                if dest_test:
                     kategori = "Transfer Antar Rekening"
         elif jenis == "keluar":
             dest_akun = detect_destination_account(akun, f"{catatan} {merchant}", merchant, catatan)
