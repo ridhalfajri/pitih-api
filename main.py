@@ -4,7 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Header
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Header, Request, BackgroundTasks
 from fastapi.responses import RedirectResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -31,7 +31,7 @@ from database import (
     link_transaction_as_transfer,
 )
 from vision_extractor import extract_receipt_data
-from bot import start_telegram_bot, RECEIPTS_DIR
+from bot import start_telegram_bot, RECEIPTS_DIR, get_notify_chat_id, send_message
 from email_worker import (
     start_email_agent_worker,
     trigger_imap_sync_once,
@@ -368,36 +368,29 @@ def chart_breakdown_bank():
 def accounts_balances():
     return get_account_balances()
 
-@app.post("/api/upload-receipt")
-async def upload_receipt(file: UploadFile = File(...)):
-    ext = os.path.splitext(file.filename)[1] or ".jpg"
-    filename = f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
-    filepath = os.path.join(RECEIPTS_DIR, filename)
-    
-    with open(filepath, "wb") as f:
-        f.write(await file.read())
-        
+async def process_uploaded_receipt_background(filepath: str, filename: str) -> None:
     try:
         extracted = await extract_receipt_data(filepath)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gagal memindai struk dengan AI: {str(e)}")
-        
-    tanggal = extracted.get("tanggal", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        print(f"[UploadReceipt] Error extracting receipt data: {e}")
+        return
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    tanggal = extracted.get("tanggal", now_str)
+    if tanggal.endswith("12:00:00"):
+        tanggal = f"{tanggal[:10]} {now_str[11:]}"
     jenis = extracted.get("jenis", "keluar")
     kategori = extracted.get("kategori", "Lainnya")
     nominal = float(extracted.get("nominal", 0))
     akun = extracted.get("akun", "Bank")
     merchant = extracted.get("merchant", "-")
-    catatan = extracted.get("catatan", "Upload Struk Manual")
+    catatan = extracted.get("catatan", "Upload Struk iPhone")
     ref_id = extracted.get("ref_id", "-")
     confidence = float(extracted.get("ai_confidence", 0.98))
-    
+
     drive_res = upload_receipt_to_drive(filepath, filename)
-    if drive_res and drive_res.get("image_url"):
-        image_url = drive_res["image_url"]
-    else:
-        image_url = f"/api/receipts/{filename}"
-    
+    image_url = drive_res.get("image_url") if (drive_res and drive_res.get("image_url")) else f"/api/receipts/{filename}"
+
     tx_id = insert_transaksi(
         tanggal=tanggal,
         jenis=jenis,
@@ -408,9 +401,127 @@ async def upload_receipt(file: UploadFile = File(...)):
         catatan=catatan,
         ref_id=ref_id,
         image_url=image_url,
-        ai_confidence=confidence
+        ai_confidence=confidence,
     )
-    
+
+    try:
+        chat_id = get_notify_chat_id()
+        if chat_id:
+            fmt_nom = f"Rp {nominal:,.0f}".replace(",", ".")
+            badge = "🟢 Uang Masuk" if jenis == "masuk" else "🔴 Uang Keluar"
+            msg = (
+                f"📸 *Struk Berhasil Dicatat dari iPhone!* (#{tx_id})\n\n"
+                f"• *Tipe:* {badge}\n"
+                f"• *Nominal:* *{fmt_nom}*\n"
+                f"• *Merchant/Pengirim:* *{merchant}*\n"
+                f"• *Kategori:* {kategori}\n"
+                f"• *Akun:* {akun}\n"
+                f"• *Catatan:* {catatan}\n\n"
+                f"💡 _Balas (reply) pesan ini jika ingin menambahkan rincian keperluan belanja._"
+            )
+            await send_message(chat_id, msg)
+    except Exception as alert_err:
+        print(f"[UploadReceipt] Telegram alert error: {alert_err}")
+
+
+@app.post("/api/upload-receipt")
+async def upload_receipt(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    file: Optional[UploadFile] = File(None),
+):
+    content_type = (request.headers.get("content-type") or "").lower()
+    file_bytes = b""
+    ext = ".jpg"
+
+    # 1. Standard multipart form file (from Web Dashboard)
+    if file and file.filename:
+        file_bytes = await file.read()
+        ext = os.path.splitext(file.filename)[1] or ".jpg"
+
+    # 2. Form data (any field name or urlencoded base64 from iOS Shortcuts)
+    elif "multipart/form-data" in content_type:
+        try:
+            form = await request.form()
+            for key, val in form.items():
+                if hasattr(val, "read"):
+                    file_bytes = await val.read()
+                    ext = os.path.splitext(getattr(val, "filename", "receipt.jpg"))[1] or ".jpg"
+                    break
+                elif isinstance(val, str) and len(val) > 100:
+                    try:
+                        import base64
+                        clean_b64 = re.sub(r"^data:image/[a-zA-Z]+;base64,", "", val)
+                        file_bytes = base64.b64decode(clean_b64)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # 3. Raw binary body (iOS Shortcuts Request Body: File or octet-stream or image/*)
+    if not file_bytes:
+        raw_body = await request.body()
+        if raw_body and len(raw_body) > 50:
+            file_bytes = raw_body
+            if "png" in content_type or file_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                ext = ".png"
+            elif "webp" in content_type or file_bytes.startswith(b"RIFF"):
+                ext = ".webp"
+            else:
+                ext = ".jpg"
+
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="File gambar struk tidak ditemukan dalam request")
+
+    filename = f"upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}{ext}"
+    filepath = os.path.join(RECEIPTS_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(file_bytes)
+
+    # Check if request is from iOS Shortcuts or requested async
+    is_mobile_shortcut = (
+        not (file and file.filename)
+        or request.query_params.get("async") == "true"
+        or "shortcuts" in (request.headers.get("user-agent") or "").lower()
+        or request.headers.get("x-client") == "shortcuts"
+    )
+
+    if is_mobile_shortcut:
+        background_tasks.add_task(process_uploaded_receipt_background, filepath, filename)
+        return {
+            "status": "processing",
+            "message": "Struk berhasil diterima dan sedang diproses AI di latar belakang",
+            "filename": filename,
+        }
+
+    # Synchronous processing for Web Dashboard
+    extracted = await extract_receipt_data(filepath)
+    tanggal = extracted.get("tanggal", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    jenis = extracted.get("jenis", "keluar")
+    kategori = extracted.get("kategori", "Lainnya")
+    nominal = float(extracted.get("nominal", 0))
+    akun = extracted.get("akun", "Bank")
+    merchant = extracted.get("merchant", "-")
+    catatan = extracted.get("catatan", "Upload Struk Manual")
+    ref_id = extracted.get("ref_id", "-")
+    confidence = float(extracted.get("ai_confidence", 0.98))
+
+    drive_res = upload_receipt_to_drive(filepath, filename)
+    image_url = drive_res.get("image_url") if (drive_res and drive_res.get("image_url")) else f"/api/receipts/{filename}"
+
+    tx_id = insert_transaksi(
+        tanggal=tanggal,
+        jenis=jenis,
+        kategori=kategori,
+        nominal=nominal,
+        akun=akun,
+        merchant=merchant,
+        catatan=catatan,
+        ref_id=ref_id,
+        image_url=image_url,
+        ai_confidence=confidence,
+    )
+
     return {
         "id": tx_id,
         "tanggal": tanggal,
@@ -422,7 +533,7 @@ async def upload_receipt(file: UploadFile = File(...)):
         "catatan": catatan,
         "ref_id": ref_id,
         "image_url": image_url,
-        "ai_confidence": confidence
+        "ai_confidence": confidence,
     }
 
 @app.put("/api/transactions/{tx_id}")
