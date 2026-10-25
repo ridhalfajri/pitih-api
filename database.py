@@ -328,6 +328,30 @@ def init_db():
         ),
     )
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS anggaran (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kategori TEXT UNIQUE NOT NULL,
+        target_nominal REAL NOT NULL,
+        periode TEXT DEFAULT 'monthly',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    default_budgets = [
+        ("Makanan & Minuman", 2500000.0),
+        ("Belanja & Retail", 1500000.0),
+        ("Transportasi", 500000.0),
+        ("Tagihan & Utilitas", 1000000.0),
+        ("Server Subscriptions", 500000.0),
+        ("Lainnya", 500000.0),
+    ]
+    for kat, target in default_budgets:
+        cursor.execute(
+            "INSERT OR IGNORE INTO anggaran (kategori, target_nominal) VALUES (?, ?)",
+            (kat, target),
+        )
     cursor.execute("SELECT COUNT(*) as cnt FROM jurnal_keuangan")
     jurnal_cnt = cursor.fetchone()["cnt"]
     cursor.execute("SELECT COUNT(*) as cnt FROM transaksi")
@@ -1361,3 +1385,133 @@ def get_email_logs(limit: int = 30) -> List[Dict[str, Any]]:
         return [dict(r) for r in cursor.fetchall()]
     finally:
         conn.close()
+
+def get_budget_summary(month_str: Optional[str] = None) -> Dict[str, Any]:
+    target_month = month_str or datetime.now().strftime("%Y-%m")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT id, kategori, target_nominal, periode, updated_at FROM anggaran ORDER BY target_nominal DESC")
+        budget_rows = cursor.fetchall()
+        budget_map = {r["kategori"]: float(r["target_nominal"]) for r in budget_rows}
+
+        cursor.execute(
+            """
+            SELECT kategori, SUM(nominal + coalesce(biaya_admin, 0)) as total_spent, COUNT(*) as count
+            FROM transaksi
+            WHERE jenis = 'keluar'
+              AND kategori != 'Transfer Antar Rekening'
+              AND strftime('%Y-%m', tanggal) = ?
+            GROUP BY kategori
+            """,
+            (target_month,),
+        )
+        spent_rows = cursor.fetchall()
+        spent_map = {r["kategori"]: float(r["total_spent"]) for r in spent_rows}
+
+        all_categories = sorted(list(set(list(budget_map.keys()) + list(spent_map.keys()))))
+
+        items = []
+        total_budget = 0.0
+        total_spent = 0.0
+
+        for cat in all_categories:
+            target = budget_map.get(cat, 0.0)
+            spent = spent_map.get(cat, 0.0)
+            remaining = target - spent
+            pct = round((spent / target) * 100, 1) if target > 0 else 0.0
+
+            status = "safe"
+            if target > 0:
+                if pct >= 100:
+                    status = "overbudget"
+                elif pct >= 80:
+                    status = "warning"
+
+            if target > 0:
+                total_budget += target
+            total_spent += spent
+
+            items.append({
+                "kategori": cat,
+                "target_nominal": target,
+                "terpakai": spent,
+                "sisa": remaining,
+                "persentase": pct,
+                "status": status,
+                "has_budget": target > 0,
+            })
+
+        overall_pct = round((total_spent / total_budget) * 100, 1) if total_budget > 0 else 0.0
+        overall_status = "safe"
+        if total_budget > 0:
+            if overall_pct >= 100:
+                overall_status = "overbudget"
+            elif overall_pct >= 80:
+                overall_status = "warning"
+
+        return {
+            "month": target_month,
+            "total_budget": total_budget,
+            "total_spent": total_spent,
+            "total_remaining": total_budget - total_spent,
+            "overall_percentage": overall_pct,
+            "overall_status": overall_status,
+            "items": items,
+        }
+    finally:
+        conn.close()
+
+
+def upsert_budget(kategori: str, target_nominal: float) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO anggaran (kategori, target_nominal, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(kategori) DO UPDATE SET
+                target_nominal = excluded.target_nominal,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (kategori.strip(), float(target_nominal)),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def delete_budget(kategori: str) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM anggaran WHERE kategori = ?", (kategori.strip(),))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def check_category_budget_alert(kategori: str) -> Optional[Dict[str, Any]]:
+    if not kategori or kategori == "Transfer Antar Rekening":
+        return None
+    try:
+        summary = get_budget_summary()
+        item = next((i for i in summary["items"] if i["kategori"] == kategori), None)
+        if not item or not item.get("has_budget"):
+            return None
+        pct = item["persentase"]
+        if pct >= 80:
+            return {
+                "kategori": kategori,
+                "target": item["target_nominal"],
+                "terpakai": item["terpakai"],
+                "sisa": item["sisa"],
+                "persentase": pct,
+                "is_overbudget": pct >= 100,
+            }
+    except Exception as e:
+        print(f"[Budget] Error checking budget alert: {e}")
+    return None

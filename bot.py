@@ -14,6 +14,7 @@ from database import (
     link_transaction_as_transfer,
     get_transaksi_by_id,
     update_transaksi,
+    check_category_budget_alert,
 )
 from email_parser import infer_category
 from vision_extractor import extract_receipt_data
@@ -81,18 +82,31 @@ async def notify_email_transaction(
 
     catatan = tx.get("catatan", "")
     merchant = tx.get("merchant", "-")
+    kategori = tx.get("kategori", "-")
     is_qris = "qris" in (catatan + " " + merchant).lower()
+
+    budget_line = ""
+    if jenis == "keluar":
+        b_alert = check_category_budget_alert(kategori)
+        if b_alert:
+            tag_label = "MELEBIHI TARGET" if b_alert["is_overbudget"] else "Mendekati Batas (80%+)"
+            fmt_sp = f"Rp {int(b_alert['terpakai']):,}".replace(",", ".")
+            fmt_tg = f"Rp {int(b_alert['target']):,}".replace(",", ".")
+            fmt_rem = f"Rp {int(abs(b_alert['sisa'])):,}".replace(",", ".")
+            rem_txt = f"Sisa jatah: *{fmt_rem}*" if not b_alert["is_overbudget"] else f"Overbudget: *+{fmt_rem}*"
+            budget_line = f"\n⚠️ *Anggaran ({tag_label})!*\nKategori *{b_alert['kategori']}* terpakai *{b_alert['persentase']}%* ({fmt_sp} dari target {fmt_tg}). {rem_txt}"
 
     if is_qris:
         msg = (
             f"📱 *Pembayaran QRIS Berhasil!* (#{tx.get('id', '-')})\n\n"
             f"• *Merchant/Toko:* *{merchant}*\n"
             f"• *Nominal:* *{fmt_nominal}*\n"
-            f"• *Kategori:* {tx.get('kategori', '-')}\n"
+            f"• *Kategori:* {kategori}\n"
             f"• *Bank/Sumber:* {tx.get('akun', '-')}\n"
             f"• *No. Ref:* `{tx.get('ref_id', '-')}`\n"
             f"• *Saldo Berjalan:* *{fmt_saldo}*"
-            f"{recon_line}\n\n"
+            f"{recon_line}"
+            f"{budget_line}\n\n"
             f"💡 _Balas (reply) pesan ini untuk menambahkan rincian barang/keperluan belanja (contoh: \"Cuci sepatu & helm\")._"
         )
     else:
@@ -102,10 +116,11 @@ async def notify_email_transaction(
             f"• *Nominal:* *{fmt_nominal}*\n"
             f"• *Bank/Akun:* {tx.get('akun', '-')}\n"
             f"• *Merchant/Tujuan:* {merchant}\n"
-            f"• *Kategori:* {tx.get('kategori', '-')}\n"
+            f"• *Kategori:* {kategori}\n"
             f"• *No Ref:* `{tx.get('ref_id', '-')}`\n"
             f"• *Saldo Berjalan:* *{fmt_saldo}*"
-            f"{recon_line}\n\n"
+            f"{recon_line}"
+            f"{budget_line}\n\n"
             f"📊 _Jurnal keuangan otomatis telah diperbarui di Pitih._"
         )
     await send_message(chat_id, msg)

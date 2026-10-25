@@ -29,6 +29,10 @@ from database import (
     get_db_connection,
     create_internal_transfer,
     link_transaction_as_transfer,
+    get_budget_summary,
+    upsert_budget,
+    delete_budget,
+    check_category_budget_alert,
 )
 from vision_extractor import extract_receipt_data
 from bot import start_telegram_bot, RECEIPTS_DIR, get_notify_chat_id, send_message
@@ -436,6 +440,17 @@ async def process_uploaded_receipt_background(filepath: str, filename: str) -> N
         if chat_id:
             fmt_nom = f"Rp {nominal:,.0f}".replace(",", ".")
             badge = "🟢 Uang Masuk" if jenis == "masuk" else "🔴 Uang Keluar"
+            budget_line = ""
+            if jenis == "keluar":
+                b_alert = check_category_budget_alert(kategori)
+                if b_alert:
+                    tag_label = "MELEBIHI TARGET" if b_alert["is_overbudget"] else "Mendekati Batas (80%+)"
+                    fmt_sp = f"Rp {int(b_alert['terpakai']):,}".replace(",", ".")
+                    fmt_tg = f"Rp {int(b_alert['target']):,}".replace(",", ".")
+                    fmt_rem = f"Rp {int(abs(b_alert['sisa'])):,}".replace(",", ".")
+                    rem_txt = f"Sisa jatah: *{fmt_rem}*" if not b_alert["is_overbudget"] else f"Overbudget: *+{fmt_rem}*"
+                    budget_line = f"\n⚠️ *Anggaran ({tag_label})!*\nKategori *{b_alert['kategori']}* terpakai *{b_alert['persentase']}%* ({fmt_sp} dari target {fmt_tg}). {rem_txt}"
+
             msg = (
                 f"📸 *Struk Berhasil Dicatat dari iPhone!* (#{tx_id})\n\n"
                 f"• *Tipe:* {badge}\n"
@@ -443,7 +458,8 @@ async def process_uploaded_receipt_background(filepath: str, filename: str) -> N
                 f"• *Merchant/Pengirim:* *{merchant}*\n"
                 f"• *Kategori:* {kategori}\n"
                 f"• *Akun:* {akun}\n"
-                f"• *Catatan:* {catatan}\n\n"
+                f"• *Catatan:* {catatan}"
+                f"{budget_line}\n\n"
                 f"💡 _Balas (reply) pesan ini jika ingin menambahkan rincian keperluan belanja._"
             )
             await send_message(chat_id, msg)
@@ -804,6 +820,28 @@ def backup_download():
         filename=filename,
         media_type="application/x-sqlite3",
     )
+
+class BudgetUpsertPayload(BaseModel):
+    kategori: str
+    target_nominal: float
+
+@app.get("/api/budgets")
+def budgets(month: Optional[str] = Query(None)):
+    return get_budget_summary(month)
+
+@app.post("/api/budgets")
+def budget_upsert(payload: BudgetUpsertPayload):
+    if not payload.kategori or not payload.kategori.strip():
+        raise HTTPException(status_code=400, detail="Kategori tidak boleh kosong")
+    if payload.target_nominal < 0:
+        raise HTTPException(status_code=400, detail="Target nominal tidak boleh negatif")
+    success = upsert_budget(payload.kategori, payload.target_nominal)
+    return {"success": success, "kategori": payload.kategori, "target_nominal": payload.target_nominal}
+
+@app.delete("/api/budgets/{kategori}")
+def budget_delete(kategori: str):
+    success = delete_budget(kategori)
+    return {"success": success, "kategori": kategori}
 # Serve receipts static files (mounted after specific route handlers)
 os.makedirs(RECEIPTS_DIR, exist_ok=True)
 app.mount("/api/receipts", StaticFiles(directory=RECEIPTS_DIR), name="receipts")
