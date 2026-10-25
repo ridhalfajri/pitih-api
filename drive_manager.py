@@ -1,7 +1,7 @@
 import os
 import io
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import Flow
@@ -74,8 +74,8 @@ def exchange_code_for_token(code: str) -> bool:
             client_secret=CLIENT_SECRET,
             scopes=SCOPES
         )
-        global _CACHED_FOLDER_ID
-        _CACHED_FOLDER_ID = None
+        global _CACHED_FOLDERS
+        _CACHED_FOLDERS = {}
         os.makedirs(os.path.dirname(os.path.abspath(TOKEN_PATH)), exist_ok=True)
         with open(TOKEN_PATH, "w") as f:
             f.write(creds.to_json())
@@ -99,19 +99,19 @@ def get_drive_service():
         print(f"[GoogleDrive] Error building service: {e}")
         return None
 
-_CACHED_FOLDER_ID: Optional[str] = None
+_CACHED_FOLDERS: Dict[str, str] = {}
 
 def get_or_create_folder(service, folder_name: str = "Pitih Struk") -> Optional[str]:
-    global _CACHED_FOLDER_ID
-    if _CACHED_FOLDER_ID:
-        return _CACHED_FOLDER_ID
+    global _CACHED_FOLDERS
+    if folder_name in _CACHED_FOLDERS:
+        return _CACHED_FOLDERS[folder_name]
 
-    if FOLDER_ID:
+    if folder_name == "Pitih Struk" and FOLDER_ID:
         try:
             folder = service.files().get(fileId=FOLDER_ID, fields="id, name, trashed").execute()
             if not folder.get("trashed"):
-                _CACHED_FOLDER_ID = FOLDER_ID
-                return _CACHED_FOLDER_ID
+                _CACHED_FOLDERS[folder_name] = FOLDER_ID
+                return FOLDER_ID
         except Exception:
             pass
 
@@ -120,8 +120,9 @@ def get_or_create_folder(service, folder_name: str = "Pitih Struk") -> Optional[
         res = service.files().list(q=q, fields="files(id, name)").execute()
         files = res.get("files", [])
         if files:
-            _CACHED_FOLDER_ID = files[0]["id"]
-            return _CACHED_FOLDER_ID
+            fid = files[0]["id"]
+            _CACHED_FOLDERS[folder_name] = fid
+            return fid
     except Exception as e:
         print(f"[GoogleDrive] Error searching for folder '{folder_name}': {e}")
 
@@ -131,9 +132,10 @@ def get_or_create_folder(service, folder_name: str = "Pitih Struk") -> Optional[
             "mimeType": "application/vnd.google-apps.folder"
         }
         created = service.files().create(body=meta, fields="id, name").execute()
-        _CACHED_FOLDER_ID = created.get("id")
-        print(f"[GoogleDrive] Created new folder '{folder_name}' with ID: {_CACHED_FOLDER_ID}")
-        return _CACHED_FOLDER_ID
+        fid = created.get("id")
+        _CACHED_FOLDERS[folder_name] = fid
+        print(f"[GoogleDrive] Created new folder '{folder_name}' with ID: {fid}")
+        return fid
     except Exception as e:
         print(f"[GoogleDrive] Error creating folder '{folder_name}': {e}")
         return None
@@ -207,3 +209,77 @@ def delete_drive_file(file_id: str) -> bool:
     except Exception as e:
         print(f"[GoogleDrive] Failed to delete file {file_id} from Drive: {e}")
         return False
+
+def upload_backup_to_drive(local_path: str, filename: str) -> Optional[Dict[str, Any]]:
+    service = get_drive_service()
+    if not service:
+        print("[GoogleDrive] Drive service not connected, skipping backup upload.")
+        return None
+
+    try:
+        folder_id = get_or_create_folder(service, folder_name="Pitih Database Backups")
+        file_metadata: Dict[str, Any] = {"name": filename}
+        if folder_id:
+            file_metadata["parents"] = [folder_id]
+
+        media = MediaFileUpload(local_path, mimetype="application/x-sqlite3", resumable=True)
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id, name, size, webViewLink, createdTime"
+        ).execute()
+
+        file_id = file.get("id")
+        web_view_link = file.get("webViewLink")
+        print(f"[GoogleDrive] Uploaded backup {filename} -> File ID: {file_id} (Folder: {folder_id})")
+
+        # Prune old backups (keep latest 20 files in Drive)
+        _prune_old_drive_backups(service, folder_id, keep_last=20)
+
+        return {
+            "file_id": file_id,
+            "name": file.get("name"),
+            "size": file.get("size"),
+            "web_view_link": web_view_link,
+            "created_time": file.get("createdTime"),
+        }
+    except Exception as e:
+        print(f"[GoogleDrive] Failed to upload backup {filename} to Google Drive: {e}")
+        return None
+
+
+def _prune_old_drive_backups(service, folder_id: str, keep_last: int = 20) -> None:
+    try:
+        q = f"'{folder_id}' in parents and trashed = false"
+        res = service.files().list(
+            q=q, fields="files(id, name, createdTime)", orderBy="createdTime desc", pageSize=50
+        ).execute()
+        files = res.get("files", [])
+        if len(files) > keep_last:
+            for old_file in files[keep_last:]:
+                fid = old_file.get("id")
+                try:
+                    service.files().delete(fileId=fid).execute()
+                    print(f"[GoogleDrive] Pruned old backup: {old_file.get('name')} ({fid})")
+                except Exception as de:
+                    print(f"[GoogleDrive] Error pruning file {fid}: {de}")
+    except Exception as e:
+        print(f"[GoogleDrive] Error listing backups for pruning: {e}")
+
+
+def list_drive_backups() -> List[Dict[str, Any]]:
+    service = get_drive_service()
+    if not service:
+        return []
+    try:
+        folder_id = get_or_create_folder(service, folder_name="Pitih Database Backups")
+        if not folder_id:
+            return []
+        q = f"'{folder_id}' in parents and trashed = false"
+        res = service.files().list(
+            q=q, fields="files(id, name, size, createdTime, webViewLink)", orderBy="createdTime desc", pageSize=20
+        ).execute()
+        return res.get("files", [])
+    except Exception as e:
+        print(f"[GoogleDrive] Error listing backups: {e}")
+        return []

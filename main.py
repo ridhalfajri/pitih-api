@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Header, Request, BackgroundTasks
-from fastapi.responses import RedirectResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -45,6 +45,12 @@ from drive_manager import (
     download_drive_file_stream,
     upload_receipt_to_drive
 )
+from backup_manager import (
+    perform_database_backup,
+    get_backup_status,
+    get_latest_backup_filepath,
+    start_database_backup_worker,
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -53,10 +59,12 @@ async def lifespan(app: FastAPI):
     # Start bot polling and email agent polling in background tasks
     bot_task = asyncio.create_task(start_telegram_bot())
     email_task = asyncio.create_task(start_email_agent_worker())
+    backup_task = asyncio.create_task(start_database_backup_worker())
     yield
     # Shutdown
     bot_task.cancel()
     email_task.cancel()
+    backup_task.cancel()
 app = FastAPI(title="Pitih API", version="1.0.0", lifespan=lifespan)
 
 # Allow CORS for pitih-web frontend
@@ -775,6 +783,26 @@ async def email_simulate(payload: EmailWebhookPayload):
         body_text=payload.body_text,
         body_html=payload.body_html,
         received_at=payload.received_at,
+    )
+
+@app.get("/api/backup/status")
+def backup_status():
+    return get_backup_status()
+
+@app.post("/api/backup/now")
+def backup_now():
+    return perform_database_backup(upload_drive=True)
+
+@app.get("/api/backup/download")
+def backup_download():
+    filepath = get_latest_backup_filepath()
+    if not filepath or not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="File backup database tidak ditemukan")
+    filename = os.path.basename(filepath)
+    return FileResponse(
+        path=filepath,
+        filename=filename,
+        media_type="application/x-sqlite3",
     )
 # Serve receipts static files (mounted after specific route handlers)
 os.makedirs(RECEIPTS_DIR, exist_ok=True)
