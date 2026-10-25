@@ -352,6 +352,43 @@ def init_db():
             "INSERT OR IGNORE INTO anggaran (kategori, target_nominal) VALUES (?, ?)",
             (kat, target),
         )
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS langganan_rutin (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nama TEXT NOT NULL,
+        kategori TEXT NOT NULL,
+        estimasi_nominal REAL NOT NULL DEFAULT 0.0,
+        tanggal_jatuh_tempo INTEGER DEFAULT 1,
+        siklus TEXT DEFAULT 'bulanan',
+        keywords TEXT DEFAULT '',
+        catatan TEXT DEFAULT '',
+        aktif INTEGER DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM langganan_rutin")
+    if cursor.fetchone()["cnt"] == 0:
+        default_subs = [
+            ("Kos", "Kost & Tempat Tinggal", 1500000.0, 1, "kos,kost,sewa kamar,kamar kos", "Sewa kamar kost bulanan"),
+            ("Gemini Pro ridhalfajri00", "Server Subscriptions", 300000.0, 5, "gemini,google workspace,google cloud", "Langganan AI Google Gemini Pro"),
+            ("Vidio Premium", "Hiburan & Streaming", 45000.0, 10, "vidio", "Streaming Vidio Premier"),
+            ("iCloud+", "Langganan Digital", 45000.0, 15, "apple,icloud,itunes", "Penyimpanan cloud Apple 200GB"),
+            ("YouTube Premium", "Hiburan & Streaming", 69000.0, 20, "youtube,google youtube", "Langganan YouTube Premium"),
+            ("Wifi", "Tagihan & Utilitas", 350000.0, 20, "indihome,biznet,myrepublic,firstmedia,wifi,oxygen", "Internet fiber rumah"),
+            ("Telkomsel", "Pulsa & Paket Data", 100000.0, 25, "telkomsel,by.u,tsel", "Paket data kartu utama"),
+            ("XL", "Pulsa & Paket Data", 100000.0, 25, "xl,axis,myxl", "Paket data cadangan"),
+        ]
+        for nama, kat, est, tgl, kws, cat in default_subs:
+            cursor.execute(
+                """
+                INSERT INTO langganan_rutin (nama, kategori, estimasi_nominal, tanggal_jatuh_tempo, keywords, catatan)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (nama, kat, est, tgl, kws, cat),
+            )
     cursor.execute("SELECT COUNT(*) as cnt FROM jurnal_keuangan")
     jurnal_cnt = cursor.fetchone()["cnt"]
     cursor.execute("SELECT COUNT(*) as cnt FROM transaksi")
@@ -1515,3 +1552,142 @@ def check_category_budget_alert(kategori: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         print(f"[Budget] Error checking budget alert: {e}")
     return None
+
+def get_subscriptions_summary(month_str: Optional[str] = None) -> Dict[str, Any]:
+    target_month = month_str or datetime.now().strftime("%Y-%m")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # 1. Fetch active subscriptions
+        cursor.execute("SELECT * FROM langganan_rutin WHERE aktif = 1 ORDER BY tanggal_jatuh_tempo ASC")
+        subs = [dict(r) for r in cursor.fetchall()]
+
+        # 2. Fetch outgoing transactions for target_month
+        cursor.execute(
+            """
+            SELECT id, tanggal, nominal, akun, merchant, catatan, kategori, ref_id
+            FROM transaksi
+            WHERE jenis = 'keluar'
+              AND kategori != 'Transfer Antar Rekening'
+              AND strftime('%Y-%m', tanggal) = ?
+            ORDER BY id DESC
+            """,
+            (target_month,),
+        )
+        txs = [dict(r) for r in cursor.fetchall()]
+
+        total_komitmen = 0.0
+        total_sudah_dibayar = 0.0
+        count_lunas = 0
+        count_pending = 0
+        items = []
+
+        for sub in subs:
+            est = float(sub.get("estimasi_nominal") or 0.0)
+            total_komitmen += est
+
+            # Build keyword probe list
+            raw_kws = sub.get("keywords") or ""
+            kw_list = [k.strip().lower() for k in raw_kws.split(",") if k.strip()]
+            sub_name_low = sub["nama"].lower()
+            kw_list.append(sub_name_low)
+
+            # Check if any transaction matches
+            matched_tx = None
+            for t in txs:
+                t_probe = f"{t.get('merchant', '')} {t.get('catatan', '')} {t.get('kategori', '')}".lower()
+                if any(kw in t_probe for kw in kw_list):
+                    matched_tx = t
+                    break
+
+            if matched_tx:
+                act_nom = float(matched_tx["nominal"])
+                total_sudah_dibayar += act_nom
+                count_lunas += 1
+                items.append({
+                    **sub,
+                    "sudah_dibayar": True,
+                    "nominal_aktual": act_nom,
+                    "tanggal_bayar": matched_tx["tanggal"],
+                    "matched_transaksi_id": matched_tx["id"],
+                    "matched_merchant": matched_tx["merchant"],
+                })
+            else:
+                count_pending += 1
+                items.append({
+                    **sub,
+                    "sudah_dibayar": False,
+                    "nominal_aktual": None,
+                    "tanggal_bayar": None,
+                    "matched_transaksi_id": None,
+                    "matched_merchant": None,
+                })
+
+        total_belum_dibayar = max(0.0, total_komitmen - total_sudah_dibayar)
+        total_subs = len(subs)
+        pct_lunas = round((count_lunas / total_subs) * 100, 1) if total_subs > 0 else 0.0
+
+        return {
+            "month": target_month,
+            "total_komitmen": total_komitmen,
+            "total_sudah_dibayar": total_sudah_dibayar,
+            "total_belum_dibayar": total_belum_dibayar,
+            "count_lunas": count_lunas,
+            "count_pending": count_pending,
+            "total_count": total_subs,
+            "persentase_lunas": pct_lunas,
+            "items": items,
+        }
+    finally:
+        conn.close()
+
+
+def upsert_subscription(payload: Dict[str, Any]) -> int:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        sub_id = payload.get("id")
+        nama = str(payload.get("nama", "")).strip()
+        kategori = str(payload.get("kategori", "Lainnya")).strip()
+        est = float(payload.get("estimasi_nominal") or 0.0)
+        due_day = int(payload.get("tanggal_jatuh_tempo") or 1)
+        cycle = str(payload.get("siklus") or "bulanan").strip()
+        kws = str(payload.get("keywords") or "").strip()
+        catatan = str(payload.get("catatan") or "").strip()
+        aktif = int(payload.get("aktif", 1))
+
+        if sub_id:
+            cursor.execute(
+                """
+                UPDATE langganan_rutin
+                SET nama = ?, kategori = ?, estimasi_nominal = ?, tanggal_jatuh_tempo = ?,
+                    siklus = ?, keywords = ?, catatan = ?, aktif = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (nama, kategori, est, due_day, cycle, kws, catatan, aktif, sub_id),
+            )
+            conn.commit()
+            return int(sub_id)
+        else:
+            cursor.execute(
+                """
+                INSERT INTO langganan_rutin (nama, kategori, estimasi_nominal, tanggal_jatuh_tempo, siklus, keywords, catatan, aktif)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (nama, kategori, est, due_day, cycle, kws, catatan, aktif),
+            )
+            conn.commit()
+            return int(cursor.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def delete_subscription(sub_id: int) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM langganan_rutin WHERE id = ?", (sub_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()

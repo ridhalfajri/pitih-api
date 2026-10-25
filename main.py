@@ -33,6 +33,9 @@ from database import (
     upsert_budget,
     delete_budget,
     check_category_budget_alert,
+    get_subscriptions_summary,
+    upsert_subscription,
+    delete_subscription,
 )
 from vision_extractor import extract_receipt_data
 from bot import start_telegram_bot, RECEIPTS_DIR, get_notify_chat_id, send_message
@@ -842,6 +845,33 @@ def budget_upsert(payload: BudgetUpsertPayload):
 def budget_delete(kategori: str):
     success = delete_budget(kategori)
     return {"success": success, "kategori": kategori}
+
+class SubscriptionUpsertPayload(BaseModel):
+    id: Optional[int] = None
+    nama: str
+    kategori: str = "Lainnya"
+    estimasi_nominal: float = 0.0
+    tanggal_jatuh_tempo: int = 1
+    siklus: str = "bulanan"
+    keywords: Optional[str] = ""
+    catatan: Optional[str] = ""
+    aktif: int = 1
+
+@app.get("/api/subscriptions")
+def subscriptions(month: Optional[str] = Query(None)):
+    return get_subscriptions_summary(month)
+
+@app.post("/api/subscriptions")
+def subscription_upsert(payload: SubscriptionUpsertPayload):
+    if not payload.nama or not payload.nama.strip():
+        raise HTTPException(status_code=400, detail="Nama tagihan tidak boleh kosong")
+    sub_id = upsert_subscription(payload.model_dump())
+    return {"success": True, "id": sub_id}
+
+@app.delete("/api/subscriptions/{sub_id}")
+def subscription_delete(sub_id: int):
+    success = delete_subscription(sub_id)
+    return {"success": success, "id": sub_id}
 # Serve receipts static files (mounted after specific route handlers)
 os.makedirs(RECEIPTS_DIR, exist_ok=True)
 app.mount("/api/receipts", StaticFiles(directory=RECEIPTS_DIR), name="receipts")
