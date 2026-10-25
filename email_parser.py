@@ -499,12 +499,14 @@ def parse_bank_email_deterministic(
     merchant = "-"
     if jenis == "masuk":
         merchant_patterns = [
-            r"(?:Nama\s+Pengirim|Rekening\s+Pengirim|Pengirim|Dari\s+Rekening|Dari|Sumber\s+Dana|Sender)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
+            r"(?:Sender\s+Name|Nama\s+Pengirim|Pengirim|Dari\s+Rekening|Dari|Sumber\s+Dana|Sender)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
+            r"(?:Rekening\s+Pengirim)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
             r"(?:Rekening\s+Penerima|Penerima|Merchant|Tujuan)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
         ]
     else:
         merchant_patterns = [
-            r"(?:Payment\s+[Tt]o|Payment\s+[Ff]or|Bayar\s+[Kk]e|Pembayaran\s+[Kk]e|Rekening\s+Penerima|Nama\s+Penerima|Nama\s+Merchant|Merchant\s+Name|Merchant|Penerima|Tujuan(?:\s+Transfer)?|Ke\s+Rekening|Penyedia\s+Jasa|Kepada|Beneficiary|Biller)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
+            r"(?:Beneficiary\s+Name|Nama\s+Penerima|Nama\s+Merchant|Merchant\s+Name|Nama\s+Tujuan|Nama\s+Beneficiary|Recipient\s+Name|Payment\s+[Tt]o|Payment\s+[Ff]or|Bayar\s+[Kk]e|Pembayaran\s+[Kk]e)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
+            r"(?:Tujuan(?:\s+Transfer)?|Penerima|Ke\s+Rekening|Kepada|Penyedia\s+Jasa|Biller|Merchant)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
             r"(?:Dari\s+Pengirim|Pengirim)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
         ]
     for pat in merchant_patterns:
@@ -518,7 +520,12 @@ def parse_bank_email_deterministic(
                     candidate = f"{primary} ({bank_dest})"
                 else:
                     candidate = primary
-                if candidate and len(candidate) >= 2 and candidate.lower() not in ("rp", "idr", "berhasil", "sukses"):
+                if (
+                    candidate
+                    and len(candidate) >= 2
+                    and not re.match(r"^\d+$", candidate)
+                    and candidate.lower() not in ("rp", "idr", "berhasil", "sukses")
+                ):
                     merchant = candidate[:80]
                     break
     # 4. Extract Reference ID
@@ -577,13 +584,34 @@ def parse_bank_email_deterministic(
         for k in ("qris", "qris payment", "pembayaran qris")
     )
 
-    catatan_match = re.search(
-        r"(?:Jenis\s+Transaksi|Metode\s+Transfer|Keterangan|Catatan|Berita|Deskripsi|Transaction\s+Type|Remarks)\s*(?:[:\-=]\s*|\n\s*)([^\n\r]+)",
+    # Extract transfer type (e.g. "Transfer to BCA Account", "Transfer BI-FAST")
+    transfer_type = None
+    tx_type_m = re.search(
+        r"(?:Transfer\s+Type|Jenis\s+Transaksi|Metode\s+Transfer|Transaction\s+Type)\s*(?:[:\-=]\s*|\n\s*)([^\n\r]+)",
         body_text,
         re.IGNORECASE,
     )
-    if catatan_match:
-        catatan = re.sub(r"\s+", " ", catatan_match.group(1)).strip(" :.-")[:120]
+    if tx_type_m:
+        t_cand = re.sub(r"\s+", " ", tx_type_m.group(1)).strip(" :.-")
+        if t_cand and t_cand.lower() not in ("-", "debet", "credit", "keluar", "masuk"):
+            transfer_type = t_cand[:80]
+
+    # Extract user remarks if any
+    remarks = None
+    remarks_m = re.search(
+        r"(?:Remarks|Berita|Catatan|Keterangan|Deskripsi)\s*(?:[:\-=]\s*|\n\s*)([^\n\r]+)",
+        body_text,
+        re.IGNORECASE,
+    )
+    if remarks_m:
+        r_cand = re.sub(r"\s+", " ", remarks_m.group(1)).strip(" :.-")
+        if r_cand and r_cand.lower() not in ("-", "none", "null", "tidak ada", "reference no", "no referensi", "nomor referensi"):
+            remarks = r_cand[:120]
+
+    if remarks:
+        catatan = remarks
+    elif transfer_type:
+        catatan = transfer_type
     else:
         clean_subj = re.sub(r"^(?:Fwd?|Re|Trs)\s*:\s*", "", subject or "", flags=re.IGNORECASE).strip()
         catatan = clean_subj or f"Notifikasi Email {akun}"
@@ -596,7 +624,10 @@ def parse_bank_email_deterministic(
             catatan = f"Pembayaran QRIS{loc_str}"
         else:
             catatan = "Pembayaran QRIS"
-
+    elif "transfer" in (transfer_type or "").lower() or "transfer" in (subject or "").lower() or "transfer" in (catatan or "").lower():
+        if merchant and merchant != "-":
+            type_label = f" ({transfer_type})" if transfer_type and transfer_type.lower() != "transfer" else ""
+            catatan = f"Transfer ke {merchant} — {remarks}" if remarks else f"Transfer ke {merchant}{type_label}"
     if admin_fee > 0:
         fmt_fee = f"Rp {admin_fee:,.0f}".replace(",", ".")
         catatan = f"{catatan} (+ Biaya Admin {fmt_fee})"
