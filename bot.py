@@ -15,6 +15,11 @@ from database import (
     get_transaksi_by_id,
     update_transaksi,
     check_category_budget_alert,
+    get_account_balances,
+    get_summary,
+    get_budget_summary,
+    get_subscriptions_summary,
+    get_transaksi_list,
 )
 from email_parser import infer_category
 from vision_extractor import extract_receipt_data
@@ -286,23 +291,143 @@ async def handle_text_message(message: dict):
     first_name = message.get("from", {}).get("first_name", "Kawan")
     print(f"[TelegramBot] Text received from {chat_id} ({first_name}): {text}")
     
-    if text.startswith("/start") or text.startswith("/help"):
+    if text.startswith("/start") or text.startswith("/help") or text.startswith("/bantuan"):
         reply = (
             f"👋 *Halo {first_name}! Saya Bot Pitih (Pencatat Keuangan Otomatis)*\n\n"
-            "📸 *Cara Penggunaan:*\n"
-            "Cukup kirimkan *foto / screenshot bukti transfer atau struk pembayaran* (BCA, Mandiri, BRI, BSI, GoPay, OVO, QRIS, dll) ke chat ini.\n\n"
-            "AI kami akan otomatis membaca:\n"
-            "• Nominal transaksi\n"
-            "• Bank / E-Wallet sumber\n"
-            "• Nama merchant / tujuan\n"
-            "• Kategori & Nomor referensi\n\n"
-            "📊 *Dashboard Keuangan:* https://pitih.haluih.id\n\n"
-            "_Kirimkan foto struk Anda sekarang untuk mencoba!_ 🚀"
+            "📱 *Fitur & Perintah Cepat:*\n"
+            "• /saldo — Cek saldo semua rekening & kas\n"
+            "• /hari_ini — Rekap transaksi & pengeluaran hari ini\n"
+            "• /bulan_ini — Rekap bulanan & status target anggaran\n"
+            "• /tagihan — Pantau tagihan rutin (Kos, Wifi, VPS, dll)\n"
+            "• /status — Cek koneksi server bot\n\n"
+            "✍️ *Catat Cepat via Chat:*\n"
+            "Ketik santai tanpa struk, misal:\n"
+            "• `Makan siang 25rb bca`\n"
+            "• `Bensin motor 30k`\n"
+            "• `Parkir 2000 cash`\n\n"
+            "📸 *Kirim Foto Struk:*\n"
+            "Kirimkan foto / screenshot struk transfer untuk dipindai otomatis via AI.\n\n"
+            "📊 *Dashboard Web:* https://pitih.haluih.id"
         )
         await send_message(chat_id, reply)
         return
     elif text.startswith("/status") or text.startswith("/ping"):
         await send_message(chat_id, "🟢 *Bot Pitih Online & Terhubung ke Server!*")
+        return
+    elif text.startswith("/saldo"):
+        balances = get_account_balances()
+        total_kas = sum(b.get("saldo", 0) for b in balances)
+        lines = []
+        for b in sorted(balances, key=lambda x: x["akun"]):
+            s_fmt = f"Rp {int(b.get('saldo', 0)):,}".replace(",", ".")
+            diff = b.get("selisih_rekonsiliasi") or 0.0
+            recon_note = f" (⚠️ Selisih: Rp {int(abs(diff)):,})" if abs(diff) >= 1 else ""
+            lines.append(f"• *{b['akun']}:* {s_fmt}{recon_note}")
+        
+        fmt_total = f"Rp {int(total_kas):,}".replace(",", ".")
+        reply = (
+            f"🏦 *Saldo Rekening & E-Wallet Pitih*\n\n"
+            + "\n".join(lines)
+            + f"\n\n💰 *Total Kas Tersedia:* *{fmt_total}*\n"
+            f"📊 _Dashboard: https://pitih.haluih.id_"
+        )
+        await send_message(chat_id, reply)
+        return
+    elif text.startswith("/hari_ini") or text.startswith("/today"):
+        now_dt = datetime.now()
+        today_str = now_dt.strftime("%Y-%m-%d")
+        now_f = now_dt.strftime("%d %b %Y")
+        txs_res = get_transaksi_list(start_date=today_str, end_date=today_str, limit=100)
+        today_txs = txs_res.get("items", [])
+        
+        masuk = sum(t["nominal"] for t in today_txs if t["jenis"] == "masuk" and t.get("kategori") != "Transfer Antar Rekening")
+        keluar = sum(t["nominal"] for t in today_txs if t["jenis"] == "keluar" and t.get("kategori") != "Transfer Antar Rekening")
+        net = masuk - keluar
+        
+        fmt_masuk = f"Rp {int(masuk):,}".replace(",", ".")
+        fmt_keluar = f"Rp {int(keluar):,}".replace(",", ".")
+        fmt_net = f"Rp {int(abs(net)):,}".replace(",", ".")
+        net_sign = "+" if net >= 0 else "-"
+        
+        tx_lines = []
+        for t in today_txs[:10]:
+            j_icon = "🟢" if t["jenis"] == "masuk" else "🔴"
+            nom_fmt = f"Rp {int(t['nominal']):,}".replace(",", ".")
+            merch = t.get("merchant") or t.get("catatan") or "-"
+            tx_lines.append(f"• {j_icon} [{t['akun']}] {merch} — *{nom_fmt}*")
+
+        details = "\n" + "\n".join(tx_lines) if tx_lines else "\n_Belum ada transaksi tercatat hari ini._"
+        reply = (
+            f"📅 *Rekap Transaksi Hari Ini ({now_f})*\n\n"
+            f"🟢 *Pemasukan:* {fmt_masuk}\n"
+            f"🔴 *Pengeluaran:* {fmt_keluar}\n"
+            f"⚖️ *Arus Kas Bersih:* *{net_sign}{fmt_net}*\n\n"
+            f"*Daftar Transaksi:* {details}\n\n"
+            f"📊 _Dashboard: https://pitih.haluih.id_"
+        )
+        await send_message(chat_id, reply)
+        return
+    elif text.startswith("/bulan_ini") or text.startswith("/rekap"):
+        now_dt = datetime.now()
+        month_str = now_dt.strftime("%Y-%m")
+        month_label = now_dt.strftime("%B %Y")
+        summary = get_summary("month")
+        b_summary = get_budget_summary(month_str)
+
+        masuk = summary.get("total_masuk") or 0.0
+        keluar = summary.get("total_keluar") or 0.0
+        net = summary.get("saldo_bersih") or 0.0
+        fmt_masuk = f"Rp {int(masuk):,}".replace(",", ".")
+        fmt_keluar = f"Rp {int(keluar):,}".replace(",", ".")
+        fmt_net = f"Rp {int(abs(net)):,}".replace(",", ".")
+        net_sign = "+" if net >= 0 else "-"
+
+        budget_lines = []
+        for b in b_summary.get("items", []):
+            if b.get("has_budget"):
+                b_spent = f"Rp {int(b['terpakai']):,}".replace(",", ".")
+                b_tgt = f"Rp {int(b['target_nominal']):,}".replace(",", ".")
+                st_icon = "⚠️" if b["status"] == "overbudget" else ("⚡" if b["status"] == "warning" else "🟢")
+                budget_lines.append(f"• {st_icon} *{b['kategori']}:* {b_spent} / {b_tgt} ({b['persentase']}%)")
+
+        b_section = "\n\n🎯 *Status Target Anggaran:*\n" + "\n".join(budget_lines) if budget_lines else ""
+        reply = (
+            f"📊 *Rekap Keuangan Bulan Ini ({month_label})*\n\n"
+            f"🟢 *Total Pemasukan:* *{fmt_masuk}*\n"
+            f"🔴 *Total Pengeluaran:* *{fmt_keluar}*\n"
+            f"⚖️ *Arus Kas Bersih:* *{net_sign}{fmt_net}*"
+            f"{b_section}\n\n"
+            f"📊 _Dashboard: https://pitih.haluih.id_"
+        )
+        await send_message(chat_id, reply)
+        return
+    elif text.startswith("/tagihan") or text.startswith("/subs"):
+        now_dt = datetime.now()
+        month_label = now_dt.strftime("%B %Y")
+        sub_data = get_subscriptions_summary()
+
+        tot_kom = f"Rp {int(sub_data.get('total_komitmen', 0)):,}".replace(",", ".")
+        tot_lunas = f"Rp {int(sub_data.get('total_sudah_dibayar', 0)):,}".replace(",", ".")
+        tot_pending = f"Rp {int(sub_data.get('total_belum_dibayar', 0)):,}".replace(",", ".")
+
+        sub_lines = []
+        for it in sub_data.get("items", []):
+            nom_str = f"Rp {int(it['estimasi_nominal']):,}".replace(",", ".")
+            if it["sudah_dibayar"]:
+                sub_lines.append(f"• 🟢 *{it['nama']}* — {nom_str} (Lunas)")
+            else:
+                sub_lines.append(f"• ⏳ *{it['nama']}* — {nom_str} (Tgl {it['tanggal_jatuh_tempo']})")
+
+        reply = (
+            f"📅 *Status Tagihan & Langganan ({month_label})*\n\n"
+            f"💰 *Total Komitmen:* *{tot_kom}*\n"
+            f"🟢 *Lunas:* {sub_data.get('count_lunas', 0)} dari {sub_data.get('total_count', 0)} tagihan ({tot_lunas})\n"
+            f"⏳ *Menunggu:* {sub_data.get('count_pending', 0)} tagihan ({tot_pending})\n\n"
+            f"*Daftar Pos Tagihan:*\n"
+            + "\n".join(sub_lines)
+            + f"\n\n📊 _Kelola di: https://pitih.haluih.id_"
+        )
+        await send_message(chat_id, reply)
         return
 
     # Check if this message is a reply to a transaction notification
