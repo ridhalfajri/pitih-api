@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import uuid
 import httpx
@@ -11,10 +12,12 @@ from database import (
     detect_destination_account,
     create_internal_transfer,
     link_transaction_as_transfer,
+    get_transaksi_by_id,
+    update_transaksi,
 )
+from email_parser import infer_category
 from vision_extractor import extract_receipt_data
 from drive_manager import upload_receipt_to_drive, is_drive_connected
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN_PITIH", "")
 RECEIPTS_DIR = os.getenv("RECEIPTS_DIR", "/opt/data/keuangan/receipts")
 LAST_CHAT_ID_FILE = os.path.join(
@@ -76,18 +79,35 @@ async def notify_email_transaction(
         fmt_diff = f"Rp {abs(selisih_rekonsiliasi):,.0f}".replace(",", ".")
         recon_line = f"\n⚠️ *Selisih Rekonsiliasi:* {fmt_diff}"
 
-    msg = (
-        f"📧 *Mutasi Email Bank Tercatat (#{tx.get('id', '-')})*\n\n"
-        f"• *Tipe:* {badge}\n"
-        f"• *Nominal:* *{fmt_nominal}*\n"
-        f"• *Bank/Akun:* {tx.get('akun', '-')}\n"
-        f"• *Merchant/Tujuan:* {tx.get('merchant', '-')}\n"
-        f"• *Kategori:* {tx.get('kategori', '-')}\n"
-        f"• *No Ref:* `{tx.get('ref_id', '-')}`\n"
-        f"• *Saldo Berjalan:* *{fmt_saldo}*"
-        f"{recon_line}\n\n"
-        f"📊 _Jurnal keuangan otomatis telah diperbarui di Pitih._"
-    )
+    catatan = tx.get("catatan", "")
+    merchant = tx.get("merchant", "-")
+    is_qris = "qris" in (catatan + " " + merchant).lower()
+
+    if is_qris:
+        msg = (
+            f"📱 *Pembayaran QRIS Berhasil!* (#{tx.get('id', '-')})\n\n"
+            f"• *Merchant/Toko:* *{merchant}*\n"
+            f"• *Nominal:* *{fmt_nominal}*\n"
+            f"• *Kategori:* {tx.get('kategori', '-')}\n"
+            f"• *Bank/Sumber:* {tx.get('akun', '-')}\n"
+            f"• *No. Ref:* `{tx.get('ref_id', '-')}`\n"
+            f"• *Saldo Berjalan:* *{fmt_saldo}*"
+            f"{recon_line}\n\n"
+            f"💡 _Balas (reply) pesan ini untuk menambahkan rincian barang/keperluan belanja (contoh: \"Cuci sepatu & helm\")._"
+        )
+    else:
+        msg = (
+            f"📧 *Mutasi Email Bank Tercatat (#{tx.get('id', '-')})*\n\n"
+            f"• *Tipe:* {badge}\n"
+            f"• *Nominal:* *{fmt_nominal}*\n"
+            f"• *Bank/Akun:* {tx.get('akun', '-')}\n"
+            f"• *Merchant/Tujuan:* {merchant}\n"
+            f"• *Kategori:* {tx.get('kategori', '-')}\n"
+            f"• *No Ref:* `{tx.get('ref_id', '-')}`\n"
+            f"• *Saldo Berjalan:* *{fmt_saldo}*"
+            f"{recon_line}\n\n"
+            f"📊 _Jurnal keuangan otomatis telah diperbarui di Pitih._"
+        )
     await send_message(chat_id, msg)
 
 async def notify_gmail_verification(
@@ -180,15 +200,86 @@ async def handle_text_message(message: dict):
             "_Kirimkan foto struk Anda sekarang untuk mencoba!_ 🚀"
         )
         await send_message(chat_id, reply)
+        return
     elif text.startswith("/status") or text.startswith("/ping"):
         await send_message(chat_id, "🟢 *Bot Pitih Online & Terhubung ke Server!*")
-    else:
-        reply = (
-            "📸 *Kirimkan foto struk pembayaran Anda!*\n\n"
-            "Saya khusus memproses gambar/foto bukti transaksi. Kirimkan foto bukti transfer Anda ke sini ya."
-        )
-        await send_message(chat_id, reply)
+        return
 
+    # Check if this message is a reply to a transaction notification
+    reply_to = message.get("reply_to_message", {})
+    reply_text = reply_to.get("text", "") if reply_to else ""
+    tx_id_match = re.search(r"#(\d+)", reply_text) if reply_text else None
+
+    if tx_id_match:
+        tx_id = int(tx_id_match.group(1))
+        tx = get_transaksi_by_id(tx_id)
+        if tx:
+            current_merchant = tx.get("merchant", "")
+            updated_category = infer_category(current_merchant, text, tx.get("jenis", "keluar"))
+            if not updated_category or updated_category == "Lainnya":
+                updated_category = tx.get("kategori", "Belanja & Retail")
+
+            updates = {
+                "catatan": text,
+                "kategori": updated_category,
+            }
+            success = update_transaksi(tx_id, updates)
+            if success:
+                reply = (
+                    f"✅ *Rincian Transaksi #{tx_id} Diperbarui!*\n\n"
+                    f"• *Catatan/Barang:* {text}\n"
+                    f"• *Kategori:* {updated_category}\n\n"
+                    f"📊 _Dashboard Pitih telah diperbarui._"
+                )
+                await send_message(chat_id, reply)
+                return
+            else:
+                await send_message(chat_id, f"❌ Gagal memperbarui catatan transaksi #{tx_id}.")
+                return
+        else:
+            await send_message(chat_id, f"⚠️ Transaksi #{tx_id} tidak ditemukan di database.")
+            return
+
+    # If not an explicit reply, check if there's a recent QRIS transaction within 15 minutes
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM transaksi WHERE (LOWER(catatan) LIKE '%qris%' OR LOWER(merchant) LIKE '%qris%') ORDER BY id DESC LIMIT 1"
+        )
+        recent_qris = cursor.fetchone()
+        conn.close()
+
+        if recent_qris:
+            created_str = recent_qris["created_at"] or recent_qris["tanggal"]
+            if created_str:
+                created_dt = datetime.strptime(str(created_str)[:19], "%Y-%m-%d %H:%M:%S")
+                diff_sec = (datetime.now() - created_dt).total_seconds()
+                if 0 <= diff_sec <= 900:  # 15 minutes
+                    tx_id = int(recent_qris["id"])
+                    current_merchant = recent_qris["merchant"]
+                    updated_category = infer_category(current_merchant, text, recent_qris["jenis"] or "keluar")
+                    if not updated_category or updated_category == "Lainnya":
+                        updated_category = recent_qris["kategori"] or "Belanja & Retail"
+                    update_transaksi(tx_id, {"catatan": text, "kategori": updated_category})
+                    reply = (
+                        f"✅ *Rincian Transaksi QRIS #{tx_id} Diperbarui!*\n\n"
+                        f"• *Merchant:* {current_merchant}\n"
+                        f"• *Catatan/Barang:* {text}\n"
+                        f"• *Kategori:* {updated_category}\n\n"
+                        f"📊 _Dashboard Pitih telah diperbarui._"
+                    )
+                    await send_message(chat_id, reply)
+                    return
+    except Exception as e:
+        print(f"[TelegramBot] Error matching recent QRIS transaction: {e}")
+
+    reply = (
+        "📸 *Kirimkan foto struk pembayaran Anda!*\n\n"
+        "Saya khusus memproses gambar/foto bukti transaksi. Kirimkan foto bukti transfer Anda ke sini ya.\n\n"
+        "💡 _Tips: Untuk menambahkan rincian belanja pada mutasi QRIS/email, balas (reply) notifikasi transaksi terkait._"
+    )
+    await send_message(chat_id, reply)
 async def process_photo_message(message: dict):
     chat_id = message["chat"]["id"]
     _save_last_chat_id(chat_id)

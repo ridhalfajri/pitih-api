@@ -24,6 +24,11 @@ Analisa gambar struk/bukti transfer ini secara teliti dan keluarkan HANYA satu b
   "ref_id": "Nomor referensi / No Transaksi / Terminal ID jika tertera di struk",
   "ai_confidence": 0.98
 }
+
+PENTING KHUSUS TRANSAKSI QRIS:
+- Jika transaksi merupakan pembayaran QRIS, ekstrak nama gerai/toko merchant (misal: "BeClean", "Kopi Kenangan", bukan "-" atau "QRIS").
+- Tuliskan rincian barang belanja / makanan pada "catatan" jika tertera di struk (misal: "Cuci sepatu & helm", "2 Kopi Susu").
+- Tentukan kategori akurat berdasarkan nama merchant / rincian barang (misal: kafe/makanan -> "Makanan & Minuman", cuci/laundry/minimarket/fashion -> "Belanja").
 """
 
 def image_to_base64(image_path: str) -> str:

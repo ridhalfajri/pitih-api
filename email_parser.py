@@ -14,6 +14,12 @@ Kamu adalah sistem AI ekstraksi mutasi transaksi dari email notifikasi perbankan
 
 Analisa pengirim, subjek, dan isi teks email di bawah ini. Tentukan apakah email ini merupakan notifikasi transaksi/mutasi keuangan yang sah (bukan email promo, iklan, newsletter, atau OTP login).
 
+PENTING KHUSUS TRANSAKSI QRIS:
+- Jika transaksi adalah pembayaran QRIS (seperti QRIS BCA/myBCA, BSI, Mandiri, dll), pastikan field "merchant" diisi dengan nama gerai/toko merchant (misal: "BeClean", "Kopi Kenangan", bukan "-" atau "QRIS").
+- Ekstrak lokasi toko/merchant jika ada (contoh: "JAKARTA TIMUR").
+- Tuliskan rincian barang/keperluan pada "catatan" bila tertera, atau format catatan informatif: "Pembayaran QRIS ke [Merchant] ([Lokasi])".
+- Jangan mengkategorikan transaksi QRIS sebagai "Tagihan & Utilitas" hanya karena subjek email mengandung "Internet Transaction Journal". Tentukan kategori berdasarkan jenis usaha merchant (misal laundry/retail -> "Belanja & Retail", makanan/cafe -> "Makanan & Minuman").
+
 Keluarkan HANYA satu blok JSON valid tanpa markdown tambahan:
 {
   "is_transaction": true,
@@ -186,6 +192,11 @@ def detect_gmail_forwarding_verification(
 
 def infer_category(merchant: str, catatan: str, jenis: str) -> str:
     combined = f"{merchant or ''} {catatan or ''}".lower()
+    # Strip generic bank transaction phrases that cause false positive category matches
+    combined = re.sub(r"\binternet\s+transaction\s+journal\b", "", combined)
+    combined = re.sub(r"\binternet\s+banking\b", "", combined)
+    combined = re.sub(r"\s+", " ", combined).strip()
+
     if (jenis or "keluar").lower() == "masuk":
         if any(k in combined for k in ("gaji", "payroll", "salary", "tunjangan")):
             return "Gaji & Payroll"
@@ -214,11 +225,27 @@ def infer_category(merchant: str, catatan: str, jenis: str) -> str:
             "makan",
             "minum",
             "bakso",
+            "nasi",
             "ayam",
             "sate",
             "padang",
             "bakery",
             "kitchen",
+            "toast",
+            "tea",
+            "mie",
+            "bebek",
+            "snack",
+            "martabak",
+            "gorengan",
+            "boba",
+            "roti",
+            "cake",
+            "burger",
+            "pizza",
+            "soto",
+            "dapur",
+            "kuliner",
         )
     ):
         return "Makanan & Minuman"
@@ -260,8 +287,12 @@ def infer_category(merchant: str, catatan: str, jenis: str) -> str:
             "bpjs",
             "pulsa",
             "paket data",
-            "internet",
             "tagihan",
+            "wifi",
+            "biznet",
+            "myrepublic",
+            "firstmedia",
+            "internet",
         )
     ):
         return "Tagihan & Utilitas"
@@ -297,10 +328,27 @@ def infer_category(merchant: str, catatan: str, jenis: str) -> str:
             "hypermart",
             "mall",
             "mart",
+            "toko",
             "store",
+            "shop",
+            "market",
+            "swalayan",
+            "kelontong",
             "belanja",
             "uniqlo",
             "ikea",
+            "clean",
+            "laundry",
+            "cuci",
+            "londri",
+            "wash",
+            "setrika",
+            "fashion",
+            "boutique",
+            "distro",
+            "optik",
+            "apotek",
+            "pharmacy",
         )
     ):
         return "Belanja & Retail"
@@ -385,7 +433,7 @@ def parse_bank_email_deterministic(
     nominal: Optional[float] = None
     used_total_field = False
     total_match = re.search(
-        r"(?:Total\s+Bayar|Total\s+Transaksi|Total\s+Pembayaran|Total\s+Debet)\s*(?:[:\-=]\s*|\n\s*)(?:Rp\.?|IDR)?\s*([0-9][0-9.,]{2,})",
+        r"(?:Total\s+Payment|Total\s+Bayar|Total\s+Transaksi|Total\s+Pembayaran|Total\s+Debet)\s*(?:[:\-=]\s*|\n\s*)(?:Rp\.?|IDR)?\s*([0-9][0-9.,]{2,})",
         combined,
         re.IGNORECASE,
     )
@@ -456,7 +504,7 @@ def parse_bank_email_deterministic(
         ]
     else:
         merchant_patterns = [
-            r"(?:Rekening\s+Penerima|Nama\s+Penerima|Nama\s+Merchant|Merchant\s+Name|Merchant|Penerima|Tujuan(?:\s+Transfer)?|Ke\s+Rekening|Penyedia\s+Jasa|Kepada|Beneficiary|Biller)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
+            r"(?:Payment\s+[Tt]o|Payment\s+[Ff]or|Bayar\s+[Kk]e|Pembayaran\s+[Kk]e|Rekening\s+Penerima|Nama\s+Penerima|Nama\s+Merchant|Merchant\s+Name|Merchant|Penerima|Tujuan(?:\s+Transfer)?|Ke\s+Rekening|Penyedia\s+Jasa|Kepada|Beneficiary|Biller)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
             r"(?:Dari\s+Pengirim|Pengirim)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
         ]
     for pat in merchant_patterns:
@@ -511,7 +559,24 @@ def parse_bank_email_deterministic(
                 admin_fee = parsed_fee
                 if used_total_field and nominal > admin_fee:
                     nominal = nominal - admin_fee
-    # 7. Extract Catatan / Keterangan / Jenis Transaksi
+    # Extract merchant location if present
+    merchant_location = None
+    loc_match = re.search(
+        r"(?:Merchant\s+Location|Lokasi\s+Merchant|Lokasi|Kota)\s*(?:[:\-=]\s*|\n\s*)([^\n\r]+)",
+        body_text,
+        re.IGNORECASE,
+    )
+    if loc_match:
+        loc_val = re.sub(r"\s+", " ", loc_match.group(1)).strip(" :.-")
+        loc_val = re.sub(r",?\s*\d{5}.*$", "", loc_val).strip(" ,.-")
+        if loc_val and len(loc_val) >= 2 and loc_val.lower() not in ("berhasil", "sukses"):
+            merchant_location = loc_val[:50]
+
+    is_qris = any(
+        k in combined_low
+        for k in ("qris", "qris payment", "pembayaran qris")
+    )
+
     catatan_match = re.search(
         r"(?:Jenis\s+Transaksi|Metode\s+Transfer|Keterangan|Catatan|Berita|Deskripsi|Transaction\s+Type|Remarks)\s*(?:[:\-=]\s*|\n\s*)([^\n\r]+)",
         body_text,
@@ -523,12 +588,23 @@ def parse_bank_email_deterministic(
         clean_subj = re.sub(r"^(?:Fwd?|Re|Trs)\s*:\s*", "", subject or "", flags=re.IGNORECASE).strip()
         catatan = clean_subj or f"Notifikasi Email {akun}"
 
+    if is_qris:
+        loc_str = f" ({merchant_location})" if merchant_location else ""
+        if merchant and merchant != "-" and merchant.lower() != "qris":
+            catatan = f"Pembayaran QRIS — {merchant}{loc_str}"
+        elif merchant_location:
+            catatan = f"Pembayaran QRIS{loc_str}"
+        else:
+            catatan = "Pembayaran QRIS"
+
     if admin_fee > 0:
         fmt_fee = f"Rp {admin_fee:,.0f}".replace(",", ".")
         catatan = f"{catatan} (+ Biaya Admin {fmt_fee})"
 
     tanggal = normalize_email_datetime(email_date, body_text)
-    kategori = infer_category(merchant, f"{subject} {catatan}", jenis)
+    clean_subject_for_cat = re.sub(r"(?i)\binternet\s+transaction\s+journal\b", "", subject or "").strip()
+    clean_subject_for_cat = re.sub(r"(?i)\binternet\s+banking\b", "", clean_subject_for_cat).strip()
+    kategori = infer_category(merchant, f"{clean_subject_for_cat} {catatan}".strip(), jenis)
     confidence = 0.99 if ref_id != "-" else 0.95
     return {
         "tanggal": tanggal,
@@ -538,6 +614,7 @@ def parse_bank_email_deterministic(
         "biaya_admin": float(admin_fee),
         "akun": akun,
         "merchant": merchant,
+        "merchant_location": merchant_location,
         "catatan": catatan,
         "ref_id": ref_id,
         "saldo_akhir": saldo_akhir,
