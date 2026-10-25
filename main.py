@@ -375,6 +375,25 @@ async def process_uploaded_receipt_background(filepath: str, filename: str) -> N
         print(f"[UploadReceipt] Error extracting receipt data: {e}")
         return
 
+    if not extracted.get("is_receipt", True) or float(extracted.get("nominal", 0)) <= 0:
+        print(f"[UploadReceipt] Gambar {filename} bukan struk transaksi finansial, diabaikan.")
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        except Exception:
+            pass
+        try:
+            chat_id = get_notify_chat_id()
+            if chat_id:
+                msg = (
+                    "⚠️ *Gambar Tidak Terdeteksi Sebagai Struk Transaksi*\n\n"
+                    "Screenshot yang dikirimkan tidak mengandung bukti transfer atau pembayaran yang sah.\n\n"
+                    "ℹ️ *Tidak ada transaksi yang dicatat ke sistem Pitih.*"
+                )
+                await send_message(chat_id, msg)
+        except Exception:
+            pass
+        return
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     tanggal = extracted.get("tanggal", now_str)
     if tanggal.endswith("12:00:00"):
@@ -496,6 +515,11 @@ async def upload_receipt(
 
     # Synchronous processing for Web Dashboard
     extracted = await extract_receipt_data(filepath)
+    if not extracted.get("is_receipt", True) or float(extracted.get("nominal", 0)) <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Gambar tidak terdeteksi sebagai bukti transfer atau struk pembayaran valid",
+        )
     tanggal = extracted.get("tanggal", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     jenis = extracted.get("jenis", "keluar")
     kategori = extracted.get("kategori", "Lainnya")

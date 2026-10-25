@@ -25,6 +25,11 @@ Analisa gambar struk/bukti transfer ini secara teliti dan keluarkan HANYA satu b
   "ai_confidence": 0.98
 }
 
+PENTING:
+- Periksa apakah gambar ini benar-benar merupakan bukti transfer bank, struk pembayaran, mutasi rekening, pembayaran QRIS, atau dokumen transaksi finansial.
+- Jika gambar ini BUKAN bukti transfer atau struk transaksi finansial (misal: foto pemandangan, tangkapan layar obrolan chat, meme, selfie, atau gambar acak lainnya), kembalikan HANYA JSON:
+  {"is_receipt": false, "nominal": 0.0, "reason": "Bukan bukti transfer atau struk transaksi finansial"}
+
 PENTING KHUSUS TRANSAKSI QRIS:
 - Jika transaksi merupakan pembayaran QRIS, ekstrak nama gerai/toko merchant (misal: "BeClean", "Kopi Kenangan", bukan "-" atau "QRIS").
 - Tuliskan rincian barang belanja / makanan pada "catatan" jika tertera di struk (misal: "Cuci sepatu & helm", "2 Kopi Susu").

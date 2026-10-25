@@ -315,7 +315,21 @@ async def process_photo_message(message: dict):
         
         # Scan with AI
         extracted = await extract_receipt_data(local_filepath)
-        
+
+        if not extracted.get("is_receipt", True) or float(extracted.get("nominal", 0)) <= 0:
+            try:
+                if os.path.exists(local_filepath):
+                    os.remove(local_filepath)
+            except Exception:
+                pass
+            await send_message(
+                chat_id,
+                "⚠️ *Gambar Tidak Terdeteksi Sebagai Struk Keuangan*\n\n"
+                "Foto yang dikirim tidak terdeteksi sebagai bukti transfer atau pembayaran yang sah.\n\n"
+                "ℹ️ *Tidak ada transaksi yang dicatat ke sistem Pitih.*",
+            )
+            return
+
         now_dt = datetime.now()
         tanggal = extracted.get("tanggal", now_dt.strftime("%Y-%m-%d %H:%M:%S"))
         # If time is 12:00:00 (default fallback when receipt only showed date), use current time
