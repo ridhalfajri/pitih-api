@@ -2,6 +2,7 @@ import asyncio
 import email
 import hashlib
 import imaplib
+import select
 from datetime import datetime
 from email.header import decode_header
 from typing import Dict, Any, Optional, List
@@ -21,6 +22,9 @@ from database import (
 from email_parser import parse_incoming_email, mask_sensitive_text, strip_html_to_text
 from bot import notify_email_transaction, notify_gmail_verification, notify_internal_transfer
 
+
+if "IDLE" not in imaplib.Commands:
+    imaplib.Commands["IDLE"] = ("AUTH", "SELECTED")
 
 def _decode_mime_words(raw_val: Optional[str]) -> str:
     if not raw_val:
@@ -342,6 +346,31 @@ async def process_raw_email_payload(
         "saldo_sesudah": saldo_sesudah,
     }
 
+def _create_imap_idle_connection(host: str, port: int, user: str, password: str) -> imaplib.IMAP4_SSL:
+    mail = imaplib.IMAP4_SSL(host, port)
+    mail.login(user, password)
+    mail.select("INBOX")
+    return mail
+
+
+def _enter_idle(mail: imaplib.IMAP4_SSL) -> bytes:
+    tag = mail._command("IDLE")
+    mail._get_line()
+    return tag
+
+
+def _wait_idle_data(mail: imaplib.IMAP4_SSL, timeout_sec: float = 600.0) -> bool:
+    r, _, _ = select.select([mail.sock], [], [], timeout_sec)
+    return bool(r)
+
+
+def _exit_idle(mail: imaplib.IMAP4_SSL, tag: bytes) -> None:
+    try:
+        mail.send(b"DONE\r\n")
+        mail._command_complete("IDLE", tag)
+    except Exception:
+        pass
+
 
 def _fetch_unseen_imap_messages(
     host: str, port: int, user: str, password: str, max_messages: int = 25
@@ -433,17 +462,55 @@ async def trigger_imap_sync_once() -> Dict[str, Any]:
 
 
 async def start_email_agent_worker() -> None:
-    print("[EmailAgent] Background IMAP polling worker started.")
+    print("[EmailAgent] Real-time IMAP IDLE push listener starting...")
     while True:
         try:
             cfg = get_email_agent_config()
             enabled = bool(cfg.get("enabled", 1))
-            interval = max(15, int(cfg.get("polling_interval_sec") or 30))
-            if enabled and (cfg.get("imap_user") or cfg.get("agent_email")) and cfg.get("imap_password"):
-                await trigger_imap_sync_once()
-            await asyncio.sleep(interval)
+            imap_user = (cfg.get("imap_user") or cfg.get("agent_email") or "").strip()
+            imap_password = (cfg.get("imap_password") or "").strip()
+            imap_host = (cfg.get("imap_host") or "imap.gmail.com").strip()
+            imap_port = int(cfg.get("imap_port") or 993)
+
+            if not enabled or not imap_user or not imap_password:
+                await asyncio.sleep(15)
+                continue
+
+            # Initial sync on boot
+            await trigger_imap_sync_once()
+
+            mail = None
+            try:
+                mail = await asyncio.to_thread(
+                    _create_imap_idle_connection, imap_host, imap_port, imap_user, imap_password
+                )
+                print(f"[EmailAgent] IMAP IDLE push connection active for {imap_user} (real-time)")
+
+                while True:
+                    cfg = get_email_agent_config()
+                    if not bool(cfg.get("enabled", 1)):
+                        break
+
+                    tag = await asyncio.to_thread(_enter_idle, mail)
+                    # Wait for push event from Gmail (or max 10 minutes keep-alive refresh)
+                    has_data = await asyncio.to_thread(_wait_idle_data, mail, 600.0)
+                    await asyncio.to_thread(_exit_idle, mail, tag)
+
+                    # Process newly arrived messages immediately
+                    await trigger_imap_sync_once()
+
+            except Exception as conn_err:
+                print(f"[EmailAgent] IMAP IDLE session notice: {conn_err}, reconnecting in 5s...")
+                await asyncio.sleep(5)
+            finally:
+                if mail:
+                    try:
+                        await asyncio.to_thread(mail.logout)
+                    except Exception:
+                        pass
+
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print(f"[EmailAgent] Worker loop error: {e}")
-            await asyncio.sleep(30)
+            print(f"[EmailAgent] Worker loop exception: {e}")
+            await asyncio.sleep(10)
