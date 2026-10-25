@@ -194,6 +194,91 @@ async def send_message(chat_id: int, text: str):
         except Exception as e:
             print(f"[TelegramBot] Error sending message: {e}")
 
+
+def parse_quick_expense_text(text: str) -> Optional[Dict[str, Any]]:
+    clean = text.strip()
+    if not clean or clean.startswith("/"):
+        return None
+
+    # 1. Detect Jenis (default 'keluar')
+    jenis = "keluar"
+    masuk_kws = ("dapat", "terima", "gaji", "uang masuk", "pemasukan", "transfer masuk")
+    if any(k in clean.lower() for k in masuk_kws):
+        jenis = "masuk"
+
+    # 2. Detect Nominal
+    nom = None
+    nom_match = None
+
+    # Pattern: 1.5jt, 2jt, 1.5 juta
+    m_jt = re.search(r"([0-9]+(?:[.,][0-9]+)?)\s*(?:jt|juta)\b", clean, re.IGNORECASE)
+    if m_jt:
+        nom = float(m_jt.group(1).replace(",", ".")) * 1_000_000
+        nom_match = m_jt.group(0)
+
+    if not nom:
+        # Pattern: 25rb, 25k, 50 ribu
+        m_rb = re.search(r"([0-9]+(?:[.,][0-9]+)?)\s*(?:rb|ribu|k)\b", clean, re.IGNORECASE)
+        if m_rb:
+            nom = float(m_rb.group(1).replace(",", ".")) * 1_000
+            nom_match = m_rb.group(0)
+
+    if not nom:
+        # Pattern: 25.000, 25000, Rp 25.000
+        m_std = re.search(r"(?:rp\.?|idr)?\s*([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?|[0-9]{4,})", clean, re.IGNORECASE)
+        if m_std:
+            s_val = m_std.group(1).replace(".", "").replace(",", ".")
+            try:
+                nom = float(s_val)
+                nom_match = m_std.group(0)
+            except Exception:
+                pass
+
+    if not nom or nom <= 0:
+        return None
+
+    # 3. Detect Akun
+    account_map = {
+        "bca": "BCA",
+        "bsi": "BSI",
+        "seabank": "Seabank",
+        "ovo": "OVO",
+        "mandiri": "Mandiri",
+        "bri": "BRI",
+        "bni": "BNI",
+        "jago": "Jago",
+        "gopay": "GoPay",
+        "dana": "DANA",
+        "cash": "Cash",
+        "tunai": "Cash",
+    }
+    akun = "Cash"
+    bank_matched_word = None
+    for kw, acc in account_map.items():
+        if re.search(rf"\b{kw}\b", clean, re.IGNORECASE):
+            akun = acc
+            bank_matched_word = kw
+            break
+
+    # 4. Extract Description / Catatan
+    desc = clean
+    if nom_match:
+        desc = re.sub(re.escape(nom_match), "", desc, flags=re.IGNORECASE)
+    if bank_matched_word:
+        desc = re.sub(rf"\b{bank_matched_word}\b", "", desc, flags=re.IGNORECASE)
+
+    desc = re.sub(r"^(?:bayar|beli|uang|pengeluaran|pemasukan)\s+", "", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"\s+", " ", desc).strip(" :.-")
+    if not desc or len(desc) < 2:
+        desc = "Pengeluaran Tunai" if jenis == "keluar" else "Pemasukan Tunai"
+
+    return {
+        "nominal": nom,
+        "akun": akun,
+        "catatan": desc.capitalize(),
+        "merchant": desc.capitalize(),
+        "jenis": jenis,
+    }
 async def handle_text_message(message: dict):
     chat_id = message["chat"]["id"]
     _save_last_chat_id(chat_id)
@@ -289,10 +374,67 @@ async def handle_text_message(message: dict):
     except Exception as e:
         print(f"[TelegramBot] Error matching recent QRIS transaction: {e}")
 
+    # Check if text is a quick expense/income note (e.g. "Makan padang 25rb bca" or "Parkir 2000 cash")
+    quick = parse_quick_expense_text(text)
+    if quick:
+        now_dt = datetime.now()
+        tanggal = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        jenis = quick["jenis"]
+        merchant = quick["merchant"]
+        catatan = quick["catatan"]
+        nominal = quick["nominal"]
+        akun = quick["akun"]
+        kategori = infer_category(merchant, catatan, jenis)
+
+        tx_id = insert_transaksi(
+            tanggal=tanggal,
+            jenis=jenis,
+            kategori=kategori,
+            nominal=nominal,
+            akun=akun,
+            merchant=merchant,
+            catatan=catatan,
+            ref_id="-",
+            image_url="",
+            source="telegram_text",
+            ai_confidence=0.99,
+        )
+
+        fmt_nom = f"Rp {nominal:,.0f}".replace(",", ".")
+        badge = "🟢 Uang Masuk" if jenis == "masuk" else "🔴 Uang Keluar"
+        budget_line = ""
+        if jenis == "keluar":
+            b_alert = check_category_budget_alert(kategori)
+            if b_alert:
+                tag_label = "MELEBIHI TARGET" if b_alert["is_overbudget"] else "Mendekati Batas (80%+)"
+                fmt_sp = f"Rp {int(b_alert['terpakai']):,}".replace(",", ".")
+                fmt_tg = f"Rp {int(b_alert['target']):,}".replace(",", ".")
+                fmt_rem = f"Rp {int(abs(b_alert['sisa'])):,}".replace(",", ".")
+                rem_txt = f"Sisa jatah: *{fmt_rem}*" if not b_alert["is_overbudget"] else f"Overbudget: *+{fmt_rem}*"
+                budget_line = f"\n\n⚠️ *Peringatan Anggaran ({tag_label})!*\nKategori *{b_alert['kategori']}* terpakai *{b_alert['persentase']}%* ({fmt_sp} dari target {fmt_tg}). {rem_txt}"
+
+        reply = (
+            f"✅ *Transaksi Berhasil Dicatat!* (#{tx_id})\n\n"
+            f"• *Tipe:* {badge}\n"
+            f"• *Nominal:* *{fmt_nom}*\n"
+            f"• *Catatan/Item:* {catatan}\n"
+            f"• *Kategori:* {kategori}\n"
+            f"• *Akun:* {akun}\n"
+            f"• *Waktu:* {now_dt.strftime('%d %b %Y, %H:%M')} WIB"
+            f"{budget_line}\n\n"
+            f"📊 _Buku jurnal dan saldo {akun} telah diperbarui._"
+        )
+        await send_message(chat_id, reply)
+        return
+
     reply = (
-        "📸 *Kirimkan foto struk pembayaran Anda!*\n\n"
-        "Saya khusus memproses gambar/foto bukti transaksi. Kirimkan foto bukti transfer Anda ke sini ya.\n\n"
-        "💡 _Tips: Untuk menambahkan rincian belanja pada mutasi QRIS/email, balas (reply) notifikasi transaksi terkait._"
+        "📸 *Kirimkan foto struk pembayaran atau ketik pengeluaran santai!*\n\n"
+        "💡 *Contoh Catat Cepat via Chat:*\n"
+        "• `Makan siang 25rb bca`\n"
+        "• `Bensin motor 30k`\n"
+        "• `Parkir 2000 cash`\n"
+        "• `Kopi tuku 28rb ovo`\n\n"
+        "Atau kirimkan foto struk belanja untuk dipindai otomatis via AI. 🚀"
     )
     await send_message(chat_id, reply)
 async def process_photo_message(message: dict):
