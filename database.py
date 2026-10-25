@@ -375,6 +375,7 @@ def init_db():
             ("Kos", "Kost & Tempat Tinggal", 900000.0, 1, "kos,kost,sewa kamar,kamar kos", "Sewa kamar kost bulanan"),
             ("Wifi", "Tagihan & Utilitas", 46500.0, 1, "indihome,biznet,myrepublic,firstmedia,wifi,oxygen", "Internet wifi bulanan"),
             ("Bensin", "Transportasi", 300000.0, 1, "pertamina,shell,spbu,bensin,bbm", "BBM transportasi bulanan"),
+            ("VPS", "Server Subscriptions", 150000.0, 1, "vps,hostinger,digitalocean,linode,vultr,hetzner,ovh,niagahoster,cloud hosting,server", "Sewa server VPS bulanan"),
             ("Gemini Pro", "Server Subscriptions", 77000.0, 5, "gemini,google workspace,google cloud", "Langganan Google Gemini Pro"),
             ("YouTube Premium", "Hiburan & Streaming", 179000.0, 10, "youtube,google youtube", "Langganan YouTube Premium"),
             ("Vidio Premium", "Hiburan & Streaming", 25000.0, 11, "vidio", "Streaming Vidio Premier"),
