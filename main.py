@@ -58,6 +58,10 @@ from backup_manager import (
     get_latest_backup_filepath,
     start_database_backup_worker,
 )
+from subscription_worker import (
+    start_subscription_reminder_worker,
+    send_subscription_reminder_now,
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -67,11 +71,13 @@ async def lifespan(app: FastAPI):
     bot_task = asyncio.create_task(start_telegram_bot())
     email_task = asyncio.create_task(start_email_agent_worker())
     backup_task = asyncio.create_task(start_database_backup_worker())
+    sub_reminder_task = asyncio.create_task(start_subscription_reminder_worker())
     yield
     # Shutdown
     bot_task.cancel()
     email_task.cancel()
     backup_task.cancel()
+    sub_reminder_task.cancel()
 app = FastAPI(title="Pitih API", version="1.0.0", lifespan=lifespan)
 
 # Allow CORS for pitih-web frontend
@@ -872,6 +878,10 @@ def subscription_upsert(payload: SubscriptionUpsertPayload):
 def subscription_delete(sub_id: int):
     success = delete_subscription(sub_id)
     return {"success": success, "id": sub_id}
+
+@app.post("/api/subscriptions/check-reminders")
+async def check_subscription_reminders():
+    return await send_subscription_reminder_now()
 # Serve receipts static files (mounted after specific route handlers)
 os.makedirs(RECEIPTS_DIR, exist_ok=True)
 app.mount("/api/receipts", StaticFiles(directory=RECEIPTS_DIR), name="receipts")
