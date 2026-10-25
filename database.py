@@ -372,14 +372,15 @@ def init_db():
     cursor.execute("SELECT COUNT(*) as cnt FROM langganan_rutin")
     if cursor.fetchone()["cnt"] == 0:
         default_subs = [
-            ("Kos", "Kost & Tempat Tinggal", 1500000.0, 1, "kos,kost,sewa kamar,kamar kos", "Sewa kamar kost bulanan"),
-            ("Gemini Pro ridhalfajri00", "Server Subscriptions", 300000.0, 5, "gemini,google workspace,google cloud", "Langganan AI Google Gemini Pro"),
-            ("Vidio Premium", "Hiburan & Streaming", 45000.0, 10, "vidio", "Streaming Vidio Premier"),
-            ("iCloud+", "Langganan Digital", 45000.0, 15, "apple,icloud,itunes", "Penyimpanan cloud Apple 200GB"),
-            ("YouTube Premium", "Hiburan & Streaming", 69000.0, 20, "youtube,google youtube", "Langganan YouTube Premium"),
-            ("Wifi", "Tagihan & Utilitas", 350000.0, 20, "indihome,biznet,myrepublic,firstmedia,wifi,oxygen", "Internet fiber rumah"),
+            ("Kos", "Kost & Tempat Tinggal", 900000.0, 1, "kos,kost,sewa kamar,kamar kos", "Sewa kamar kost bulanan"),
+            ("Wifi", "Tagihan & Utilitas", 46500.0, 1, "indihome,biznet,myrepublic,firstmedia,wifi,oxygen", "Internet wifi bulanan"),
+            ("Bensin", "Transportasi", 300000.0, 1, "pertamina,shell,spbu,bensin,bbm", "BBM transportasi bulanan"),
+            ("Gemini Pro", "Server Subscriptions", 77000.0, 5, "gemini,google workspace,google cloud", "Langganan Google Gemini Pro"),
+            ("YouTube Premium", "Hiburan & Streaming", 179000.0, 10, "youtube,google youtube", "Langganan YouTube Premium"),
+            ("Vidio Premium", "Hiburan & Streaming", 25000.0, 11, "vidio", "Streaming Vidio Premier"),
             ("Telkomsel", "Pulsa & Paket Data", 100000.0, 25, "telkomsel,by.u,tsel", "Paket data kartu utama"),
             ("XL", "Pulsa & Paket Data", 100000.0, 25, "xl,axis,myxl", "Paket data cadangan"),
+            ("iCloud+", "Langganan Digital", 59000.0, 29, "apple,icloud,itunes", "Penyimpanan cloud Apple"),
         ]
         for nama, kat, est, tgl, kws, cat in default_subs:
             cursor.execute(
