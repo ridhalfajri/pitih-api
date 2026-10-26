@@ -594,6 +594,9 @@ def detect_destination_account(
                         return canon_acc
                 else:
                     return canon_acc
+    merchant_low = (merchant or "").lower()
+    catatan_low = (catatan or "").lower()
+
     # 2. Check merchant text
     for canon_acc in registered_map.keys():
         if canon_acc == src_norm:
@@ -601,7 +604,6 @@ def detect_destination_account(
         kws = account_keywords.get(canon_acc, [canon_acc.lower()])
         if any(kw in merchant_low for kw in kws):
             return canon_acc
-
     # 3. Check catatan text
     for canon_acc in registered_map.keys():
         if canon_acc == src_norm:

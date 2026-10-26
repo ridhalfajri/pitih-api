@@ -3,7 +3,7 @@ import email
 import hashlib
 import imaplib
 import select
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.header import decode_header
 from typing import Dict, Any, Optional, List
 
@@ -379,8 +379,10 @@ def _fetch_unseen_imap_messages(
     try:
         mail.login(user, password)
         mail.select("INBOX")
-        since_str = datetime.now().strftime("%d-%b-%Y")
-        typ, data = mail.search(None, f'(UNSEEN SINCE "{since_str}")')
+        since_dt = (datetime.now() - timedelta(days=2)).strftime("%d-%b-%Y")
+        typ, data = mail.search(None, f'(SINCE "{since_dt}")')
+        if typ != "OK" or not data or not data[0]:
+            typ, data = mail.search(None, "ALL")
         if typ != "OK" or not data or not data[0]:
             return []
         msg_nums = data[0].split()[-max_messages:]
