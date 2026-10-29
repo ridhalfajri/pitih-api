@@ -16,7 +16,7 @@ Analisa gambar struk/bukti transfer ini secara teliti dan keluarkan HANYA satu b
 {
   "tanggal": "YYYY-MM-DD HH:MM:SS", (gunakan jam transaksi bila ada, bila tidak ada pakai 12:00:00, bila tahun tidak ada asumsikan 2026)
   "jenis": "keluar" atau "masuk", (default "keluar" jika transfer ke orang lain / pembayaran QRIS / beli barang)
-  "kategori": "Makanan & Minuman" | "Operasional" | "Transport" | "Belanja" | "Gaji / Pemasukan" | "Lainnya",
+  "kategori": "Makanan & Minuman" | "Belanja & Retail" | "Transportasi" | "Tagihan & Utilitas" | "Kost & Tempat Tinggal" | "Langganan Digital" | "Transfer & Top Up" | "Lainnya",
   "nominal": 0.0, (angka float bersih; untuk transaksi "keluar" jika ada Biaya Admin / Biaya Transfer dan belum termasuk di Total, jumlahkan ke nominal agar sesuai potongan saldo rekening)
   "akun": "Nama Bank / E-Wallet", (contoh: "BCA", "Mandiri", "BSI", "Jago", "Seabank", "GoPay", "OVO")
   "merchant": "Nama penerima / pengirim / nama toko merchant",

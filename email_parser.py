@@ -25,7 +25,7 @@ Keluarkan HANYA satu blok JSON valid tanpa markdown tambahan:
   "is_transaction": true,
   "tanggal": "YYYY-MM-DD HH:MM:SS",
   "jenis": "keluar" atau "masuk",
-  "kategori": "Makanan & Minuman" | "Belanja & Retail" | "Transportasi" | "Tagihan & Utilitas" | "Transfer & Top Up" | "Client Payment" | "Vendor/Operasional" | "Server Subscriptions" | "Gaji & Payroll" | "Refund" | "Lainnya",
+  "kategori": "Makanan & Minuman" | "Belanja & Retail" | "Transportasi" | "Tagihan & Utilitas" | "Kost & Tempat Tinggal" | "Langganan Digital" | "Transfer & Top Up" | "Client Payment" | "Vendor/Operasional" | "Gaji & Payroll" | "Refund" | "Lainnya",
   "nominal": 0.0,
   "akun": "BCA" | "Mandiri" | "BSI (BYOND)" | "BRI" | "BNI" | "Jago" | "Seabank" | "GoPay" | "OVO" | "QRIS",
   "merchant": "Nama penerima / pengirim / merchant",
@@ -299,22 +299,43 @@ def infer_category(merchant: str, catatan: str, jenis: str) -> str:
     if any(
         k in combined
         for k in (
+            "kos",
+            "kost",
+            "sewa kamar",
+            "kamar kos",
+            "uang kos",
+        )
+    ):
+        return "Kost & Tempat Tinggal"
+    if any(
+        k in combined
+        for k in (
+            "apple",
+            "icloud",
+            "itunes",
+            "google one",
+            "google workspace",
+            "google cloud",
+            "chatgpt",
+            "openai",
+            "anthropic",
+            "claude",
+            "github",
             "aws",
-            "cloud",
             "cloudflare",
             "digitalocean",
             "vercel",
-            "github",
-            "openai",
-            "anthropic",
             "hostinger",
             "niagahoster",
             "domain",
-            "server",
             "vps",
+            "cloud hosting",
+            "subscription",
+            "spotify",
+            "netflix",
         )
     ):
-        return "Server Subscriptions"
+        return "Langganan Digital"
     if any(
         k in combined
         for k in (

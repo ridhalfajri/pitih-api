@@ -340,11 +340,12 @@ def init_db():
     """)
 
     default_budgets = [
-        ("Makanan & Minuman", 2500000.0),
+        ("Makanan & Minuman", 2000000.0),
         ("Belanja & Retail", 1500000.0),
         ("Transportasi", 500000.0),
-        ("Tagihan & Utilitas", 1000000.0),
-        ("Server Subscriptions", 500000.0),
+        ("Tagihan & Utilitas", 46500.0),
+        ("Langganan Digital", 286000.0),
+        ("Kost & Tempat Tinggal", 900000.0),
         ("Lainnya", 500000.0),
     ]
     for kat, target in default_budgets:
@@ -352,6 +353,21 @@ def init_db():
             "INSERT OR IGNORE INTO anggaran (kategori, target_nominal) VALUES (?, ?)",
             (kat, target),
         )
+
+    # Migrasi kategori 'Server Subscriptions' ke 'Langganan Digital'
+    try:
+        cursor.execute("UPDATE OR IGNORE anggaran SET kategori = 'Langganan Digital' WHERE kategori = 'Server Subscriptions'")
+        cursor.execute("DELETE FROM anggaran WHERE kategori = 'Server Subscriptions'")
+    except Exception:
+        pass
+    try:
+        cursor.execute("UPDATE transaksi SET kategori = 'Langganan Digital' WHERE kategori = 'Server Subscriptions'")
+    except Exception:
+        pass
+    try:
+        cursor.execute("UPDATE langganan_rutin SET kategori = 'Langganan Digital' WHERE kategori = 'Server Subscriptions'")
+    except Exception:
+        pass
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS langganan_rutin (
@@ -374,11 +390,11 @@ def init_db():
         default_subs = [
             ("Kos", "Kost & Tempat Tinggal", 900000.0, 1, "kos,kost,sewa kamar,kamar kos", "Sewa kamar kost bulanan"),
             ("Wifi", "Tagihan & Utilitas", 46500.0, 1, "indihome,biznet,myrepublic,firstmedia,wifi,oxygen", "Internet wifi bulanan"),
-            ("VPS", "Server Subscriptions", 150000.0, 1, "vps,hostinger,digitalocean,linode,vultr,hetzner,ovh,niagahoster,cloud hosting,server", "Sewa server VPS bulanan"),
-            ("Gemini Pro", "Server Subscriptions", 77000.0, 5, "gemini,google workspace,google cloud", "Langganan Google Gemini Pro"),
+            ("VPS", "Langganan Digital", 150000.0, 1, "vps,hostinger,digitalocean,linode,vultr,hetzner,ovh,niagahoster,cloud hosting", "Sewa server VPS bulanan"),
+            ("Gemini Pro", "Langganan Digital", 77000.0, 5, "gemini,google workspace,google cloud", "Langganan Google Gemini Pro"),
             ("YouTube Premium", "Hiburan & Streaming", 179000.0, 10, "youtube,google youtube", "Langganan YouTube Premium"),
             ("Vidio Premium", "Hiburan & Streaming", 25000.0, 11, "vidio", "Streaming Vidio Premier"),
-            ("iCloud+", "Langganan Digital", 59000.0, 29, "apple,icloud,itunes", "Penyimpanan cloud Apple"),
+            ("iCloud+", "Langganan Digital", 59000.0, 29, "apple,icloud,itunes,apple.com", "Penyimpanan cloud Apple"),
         ]
         for nama, kat, est, tgl, kws, cat in default_subs:
             cursor.execute(
@@ -1596,6 +1612,8 @@ def get_subscriptions_summary(month_str: Optional[str] = None) -> Dict[str, Any]
         count_pending = 0
         items = []
 
+        matched_tx_ids = set()
+
         for sub in subs:
             est = float(sub.get("estimasi_nominal") or 0.0)
             total_komitmen += est
@@ -1604,14 +1622,19 @@ def get_subscriptions_summary(month_str: Optional[str] = None) -> Dict[str, Any]
             raw_kws = sub.get("keywords") or ""
             kw_list = [k.strip().lower() for k in raw_kws.split(",") if k.strip()]
             sub_name_low = sub["nama"].lower()
-            kw_list.append(sub_name_low)
+            if sub_name_low not in kw_list:
+                kw_list.append(sub_name_low)
 
             # Check if any transaction matches
             matched_tx = None
             for t in txs:
-                t_probe = f"{t.get('merchant', '')} {t.get('catatan', '')} {t.get('kategori', '')}".lower()
+                if t["id"] in matched_tx_ids:
+                    continue
+                # Probe ONLY merchant and catatan - do NOT probe kategori to avoid false-positive matches
+                t_probe = f"{t.get('merchant', '')} {t.get('catatan', '')}".lower()
                 if any(kw in t_probe for kw in kw_list):
                     matched_tx = t
+                    matched_tx_ids.add(t["id"])
                     break
 
             if matched_tx:
