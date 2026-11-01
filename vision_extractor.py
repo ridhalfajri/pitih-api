@@ -30,6 +30,12 @@ PENTING:
 - Jika gambar ini BUKAN bukti transfer atau struk transaksi finansial (misal: foto pemandangan, tangkapan layar obrolan chat, meme, selfie, atau gambar acak lainnya), kembalikan HANYA JSON:
   {"is_receipt": false, "nominal": 0.0, "reason": "Bukan bukti transfer atau struk transaksi finansial"}
 
+PENTING KHUSUS REKENING PENGIRIM / AKUN:
+- Tentukan "akun" dari APLIKASI ASAL PENGIRIM (bank/e-wallet yang mengeluarkan saldo), BUKAN bank penerima atau acquirer QRIS.
+- Jika ada tulisan "Livin' by Mandiri" atau logo Mandiri (warna biru/kuning khas Mandiri), akun wajib "Mandiri", meskipun di teks QRIS ada tulisan nama bank lain (seperti BCA, Nobu, ShopeePay, dll yang hanya bertindak sebagai acquirer merchant).
+- Jika ada logo BCA Mobile / myBCA / warna khas biru BCA, barulah isi "BCA".
+- Jika ada OVO / GoPay / Dana / Seabank / BSI, sesuaikan dengan aplikasi tempat transaksi tersebut dilakukan.
+
 PENTING KHUSUS TRANSAKSI QRIS:
 - Jika transaksi merupakan pembayaran QRIS, ekstrak nama gerai/toko merchant (misal: "BeClean", "Kopi Kenangan", bukan "-" atau "QRIS").
 - Tuliskan rincian barang belanja / makanan pada "catatan" jika tertera di struk (misal: "Cuci sepatu & helm", "2 Kopi Susu").
