@@ -94,12 +94,13 @@ async def notify_email_transaction(
     if jenis == "keluar":
         b_alert = check_category_budget_alert(kategori)
         if b_alert:
-            tag_label = "MELEBIHI TARGET" if b_alert["is_overbudget"] else "Mendekati Batas (80%+)"
+            tag_label = "MELEBIHI TARGET" if b_alert["is_overbudget"] else ("TEPAT BATAS (100%)" if b_alert.get("is_reached") else "Mendekati Batas (80%+)")
             fmt_sp = f"Rp {int(b_alert['terpakai']):,}".replace(",", ".")
             fmt_tg = f"Rp {int(b_alert['target']):,}".replace(",", ".")
             fmt_rem = f"Rp {int(abs(b_alert['sisa'])):,}".replace(",", ".")
             rem_txt = f"Sisa jatah: *{fmt_rem}*" if not b_alert["is_overbudget"] else f"Overbudget: *+{fmt_rem}*"
-            budget_line = f"\n⚠️ *Anggaran ({tag_label})!*\nKategori *{b_alert['kategori']}* terpakai *{b_alert['persentase']}%* ({fmt_sp} dari target {fmt_tg}). {rem_txt}"
+            icon_badge = "🚨" if b_alert["is_overbudget"] else ("🎯" if b_alert.get("is_reached") else "⚠️")
+            budget_line = f"\n{icon_badge} *Anggaran ({tag_label})!*\nKategori *{b_alert['kategori']}* terpakai *{b_alert['persentase']}%* ({fmt_sp} dari target {fmt_tg}). {rem_txt}"
 
     if is_qris:
         msg = (
@@ -387,7 +388,7 @@ async def handle_text_message(message: dict):
             if b.get("has_budget"):
                 b_spent = f"Rp {int(b['terpakai']):,}".replace(",", ".")
                 b_tgt = f"Rp {int(b['target_nominal']):,}".replace(",", ".")
-                st_icon = "⚠️" if b["status"] == "overbudget" else ("⚡" if b["status"] == "warning" else "🟢")
+                st_icon = "⚠️" if b["status"] == "overbudget" else ("🎯" if b["status"] == "reached" else ("⚡" if b["status"] == "warning" else "🟢"))
                 budget_lines.append(f"• {st_icon} *{b['kategori']}:* {b_spent} / {b_tgt} ({b['persentase']}%)")
 
         b_section = "\n\n🎯 *Status Target Anggaran:*\n" + "\n".join(budget_lines) if budget_lines else ""
@@ -531,12 +532,13 @@ async def handle_text_message(message: dict):
         if jenis == "keluar":
             b_alert = check_category_budget_alert(kategori)
             if b_alert:
-                tag_label = "MELEBIHI TARGET" if b_alert["is_overbudget"] else "Mendekati Batas (80%+)"
+                tag_label = "MELEBIHI TARGET" if b_alert["is_overbudget"] else ("TEPAT BATAS (100%)" if b_alert.get("is_reached") else "Mendekati Batas (80%+)")
                 fmt_sp = f"Rp {int(b_alert['terpakai']):,}".replace(",", ".")
                 fmt_tg = f"Rp {int(b_alert['target']):,}".replace(",", ".")
                 fmt_rem = f"Rp {int(abs(b_alert['sisa'])):,}".replace(",", ".")
                 rem_txt = f"Sisa jatah: *{fmt_rem}*" if not b_alert["is_overbudget"] else f"Overbudget: *+{fmt_rem}*"
-                budget_line = f"\n\n⚠️ *Peringatan Anggaran ({tag_label})!*\nKategori *{b_alert['kategori']}* terpakai *{b_alert['persentase']}%* ({fmt_sp} dari target {fmt_tg}). {rem_txt}"
+                icon_badge = "🚨" if b_alert["is_overbudget"] else ("🎯" if b_alert.get("is_reached") else "⚠️")
+                budget_line = f"\n\n{icon_badge} *Peringatan Anggaran ({tag_label})!*\nKategori *{b_alert['kategori']}* terpakai *{b_alert['persentase']}%* ({fmt_sp} dari target {fmt_tg}). {rem_txt}"
 
         reply = (
             f"✅ *Transaksi Berhasil Dicatat!* (#{tx_id})\n\n"

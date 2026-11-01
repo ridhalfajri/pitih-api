@@ -457,12 +457,13 @@ async def process_uploaded_receipt_background(filepath: str, filename: str) -> N
             if jenis == "keluar":
                 b_alert = check_category_budget_alert(kategori)
                 if b_alert:
-                    tag_label = "MELEBIHI TARGET" if b_alert["is_overbudget"] else "Mendekati Batas (80%+)"
+                    tag_label = "MELEBIHI TARGET" if b_alert["is_overbudget"] else ("TEPAT BATAS (100%)" if b_alert.get("is_reached") else "Mendekati Batas (80%+)")
                     fmt_sp = f"Rp {int(b_alert['terpakai']):,}".replace(",", ".")
                     fmt_tg = f"Rp {int(b_alert['target']):,}".replace(",", ".")
                     fmt_rem = f"Rp {int(abs(b_alert['sisa'])):,}".replace(",", ".")
                     rem_txt = f"Sisa jatah: *{fmt_rem}*" if not b_alert["is_overbudget"] else f"Overbudget: *+{fmt_rem}*"
-                    budget_line = f"\n⚠️ *Anggaran ({tag_label})!*\nKategori *{b_alert['kategori']}* terpakai *{b_alert['persentase']}%* ({fmt_sp} dari target {fmt_tg}). {rem_txt}"
+                    icon_badge = "🚨" if b_alert["is_overbudget"] else ("🎯" if b_alert.get("is_reached") else "⚠️")
+                    budget_line = f"\n{icon_badge} *Anggaran ({tag_label})!*\nKategori *{b_alert['kategori']}* terpakai *{b_alert['persentase']}%* ({fmt_sp} dari target {fmt_tg}). {rem_txt}"
 
             msg = (
                 f"📸 *Struk Berhasil Dicatat dari iPhone!* (#{tx_id})\n\n"

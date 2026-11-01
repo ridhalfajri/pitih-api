@@ -1490,8 +1490,10 @@ def get_budget_summary(month_str: Optional[str] = None) -> Dict[str, Any]:
 
             status = "safe"
             if target > 0:
-                if pct >= 100:
+                if pct > 100:
                     status = "overbudget"
+                elif pct == 100:
+                    status = "reached"
                 elif pct >= 80:
                     status = "warning"
 
@@ -1512,8 +1514,10 @@ def get_budget_summary(month_str: Optional[str] = None) -> Dict[str, Any]:
         overall_pct = round((total_spent / total_budget) * 100, 1) if total_budget > 0 else 0.0
         overall_status = "safe"
         if total_budget > 0:
-            if overall_pct >= 100:
+            if overall_pct > 100:
                 overall_status = "overbudget"
+            elif overall_pct == 100:
+                overall_status = "reached"
             elif overall_pct >= 80:
                 overall_status = "warning"
 
@@ -1577,7 +1581,8 @@ def check_category_budget_alert(kategori: str) -> Optional[Dict[str, Any]]:
                 "terpakai": item["terpakai"],
                 "sisa": item["sisa"],
                 "persentase": pct,
-                "is_overbudget": pct >= 100,
+                "is_overbudget": pct > 100,
+                "is_reached": pct == 100,
             }
     except Exception as e:
         print(f"[Budget] Error checking budget alert: {e}")
