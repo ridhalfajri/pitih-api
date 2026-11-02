@@ -396,26 +396,50 @@ def _detect_bank_account(sender: str, subject: str, body_text: str) -> Optional[
         r"(?:From|Dari)\s*:\s*([^\n\r]+)", body_text, re.IGNORECASE
     )
     fwd_from = fwd_from_match.group(1) if fwd_from_match else ""
-    probe = f"{sender}\n{fwd_from}\n{subject}\n{body_text[:1000]}".lower()
+    header_probe = f"{sender}\n{fwd_from}\n{subject}".lower()
 
-    if any(k in probe for k in ("bankbsi.co.id", "byond", "bank syariah indonesia", "bsi mobile", "notifikasi bsi")):
+    # Priority 1: Direct match from Sender / Subject header
+    if any(k in header_probe for k in ("bankbsi.co.id", "byond", "bank syariah indonesia", "bsi mobile", "notifikasi bsi")):
         return "BSI"
-    if any(k in probe for k in ("bca.co.id", "klikbca", "mybca", "bca mobile", "m-bca", "tahapan bca", "bank central asia")):
+    if any(k in header_probe for k in ("bca.co.id", "klikbca", "mybca", "bca mobile", "m-bca", "tahapan bca", "bank central asia")):
         return "BCA"
-    if any(k in probe for k in ("bankmandiri.co.id", "mandiricare", "livin", "bank mandiri")):
+    if any(k in header_probe for k in ("bankmandiri.co.id", "mandiricare", "livin", "bank mandiri")):
         return "Mandiri"
-    if any(k in probe for k in ("bri.co.id", "brimo", "bank rakyat indonesia")):
+    if any(k in header_probe for k in ("bri.co.id", "brimo", "bank rakyat indonesia")):
         return "BRI"
-    if any(k in probe for k in ("bni.co.id", "wondr", "bank negara indonesia")):
+    if any(k in header_probe for k in ("bni.co.id", "wondr", "bank negara indonesia")):
         return "BNI"
-    if any(k in probe for k in ("jago.com", "bank jago", "kantong jago")):
+    if any(k in header_probe for k in ("jago.com", "bank jago", "kantong jago")):
         return "Jago"
-    if any(k in probe for k in ("seabank.co.id", "seabank")):
+    if any(k in header_probe for k in ("seabank.co.id", "seabank")):
         return "Seabank"
-    if any(k in probe for k in ("gopay", "gojek.com")):
-        return "GoPay"
-    if any(k in probe for k in ("ovo.id", "notifikasi ovo", "pembayaran ovo")):
+    if any(k in header_probe for k in ("ovo.co.id", "ovo.id", "@ovo", "notifikasi ovo", "pembayaran ovo", "ovo qr")):
         return "OVO"
+    if any(k in header_probe for k in ("gopay", "gojek.com")):
+        return "GoPay"
+
+    # Priority 2: Fallback to body text (strip acquirer text so QRIS acquirers like GoPay/BCA don't confuse sender account)
+    cleaned_body = re.sub(r"(?:nama\s+acquirer|acquirer)\s+[^\n\r]+", "", body_text[:1200], flags=re.IGNORECASE)
+    body_probe = cleaned_body.lower()
+
+    if any(k in body_probe for k in ("bankbsi.co.id", "byond", "bank syariah indonesia", "bsi mobile", "notifikasi bsi")):
+        return "BSI"
+    if any(k in body_probe for k in ("bca.co.id", "klikbca", "mybca", "bca mobile", "m-bca", "tahapan bca", "bank central asia")):
+        return "BCA"
+    if any(k in body_probe for k in ("bankmandiri.co.id", "mandiricare", "livin", "bank mandiri")):
+        return "Mandiri"
+    if any(k in body_probe for k in ("bri.co.id", "brimo", "bank rakyat indonesia")):
+        return "BRI"
+    if any(k in body_probe for k in ("bni.co.id", "wondr", "bank negara indonesia")):
+        return "BNI"
+    if any(k in body_probe for k in ("jago.com", "bank jago", "kantong jago")):
+        return "Jago"
+    if any(k in body_probe for k in ("seabank.co.id", "seabank")):
+        return "Seabank"
+    if any(k in body_probe for k in ("ovo.co.id", "ovo.id", "notifikasi ovo", "pembayaran ovo")):
+        return "OVO"
+    if any(k in body_probe for k in ("gopay", "gojek.com")):
+        return "GoPay"
     return None
 
 
@@ -526,7 +550,7 @@ def parse_bank_email_deterministic(
         ]
     else:
         merchant_patterns = [
-            r"(?:Beneficiary\s+Name|Nama\s+Penerima|Nama\s+Merchant|Merchant\s+Name|Nama\s+Tujuan|Nama\s+Beneficiary|Recipient\s+Name|Payment\s+[Tt]o|Payment\s+[Ff]or|Bayar\s+[Kk]e|Pembayaran\s+[Kk]e)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
+            r"(?:Beneficiary\s+Name|Nama\s+Penerima|Nama\s+Merchant|Merchant\s+Name|Nama\s+Toko|Nama\s+Tujuan|Nama\s+Beneficiary|Recipient\s+Name|Payment\s+[Tt]o|Payment\s+[Ff]or|Bayar\s+[Kk]e|Pembayaran\s+[Kk]e)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
             r"(?:Tujuan(?:\s+Transfer)?|Penerima|Ke\s+Rekening|Kepada|Penyedia\s+Jasa|Biller|Merchant)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
             r"(?:Dari\s+Pengirim|Pengirim)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
         ]
