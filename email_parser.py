@@ -564,30 +564,42 @@ def parse_bank_email_deterministic(
             r"(?:Rekening\s+Penerima|Penerima|Merchant|Tujuan)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
         ]
     else:
-        merchant_patterns = [
-            r"(?:Beneficiary\s+Name|Nama\s+Penerima|Nama\s+Merchant|Merchant\s+Name|Nama\s+Toko|Nama\s+Tujuan|Nama\s+Beneficiary|Recipient\s+Name|Payment\s+[Tt]o|Payment\s+[Ff]or|Bayar\s+[Kk]e|Pembayaran\s+[Kk]e)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
-            r"(?:Tujuan(?:\s+Transfer)?|Penerima|Ke\s+Rekening|Kepada|Penyedia\s+Jasa|Biller|Merchant)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
-            r"(?:Dari\s+Pengirim|Pengirim)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
-        ]
-    for pat in merchant_patterns:
-        m = re.search(pat, body_text, re.IGNORECASE)
-        if m:
-            lines = [re.sub(r"\s+", " ", ln).strip(" :.-") for ln in m.group(1).splitlines() if ln.strip()]
-            if lines:
-                primary = re.sub(r"\s*[-/]\s*\d{6,}.*$", "", lines[0]).strip()
-                if len(lines) > 1 and "bank" in lines[1].lower():
-                    bank_dest = re.sub(r"\s*[-/]\s*\d{6,}.*$", "", lines[1]).strip()
-                    candidate = f"{primary} ({bank_dest})"
-                else:
-                    candidate = primary
-                if (
-                    candidate
-                    and len(candidate) >= 2
-                    and not re.match(r"^\d+$", candidate)
-                    and candidate.lower() not in ("rp", "idr", "berhasil", "sukses")
-                ):
-                    merchant = candidate[:80]
-                    break
+        # Special check for inline QRIS receipt formats (e.g. OVO QRIS where fields are space-separated)
+        toko_inline_m = re.search(
+            r"Nama\s+Toko\s*[:\-=]?\s*(.*?)(?=\s+(?:Lokasi|ID\s+Merchant|Terminal\s+ID|Nominal|Total|$))",
+            body_text,
+            re.IGNORECASE,
+        )
+        if toko_inline_m:
+            cand_toko = toko_inline_m.group(1).strip(" :.-/")
+            if cand_toko and len(cand_toko) >= 2:
+                merchant = cand_toko[:80]
+
+        if merchant == "-":
+            merchant_patterns = [
+                r"(?:Beneficiary\s+Name|Nama\s+Penerima|Nama\s+Merchant|Merchant\s+Name|Nama\s+Toko|Nama\s+Tujuan|Nama\s+Beneficiary|Recipient\s+Name|Payment\s+[Tt]o|Payment\s+[Ff]or|Bayar\s+[Kk]e|Pembayaran\s+[Kk]e)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
+                r"(?:Tujuan(?:\s+Transfer)?|Penerima|Ke\s+Rekening|Kepada|Penyedia\s+Jasa|Biller|Merchant)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+(?:\n\s*Bank\s+[^\n\r|]+)?)",
+                r"(?:Dari\s+Pengirim|Pengirim)\s*(?:[:\-=]\s*|\n\s*)([^\n\r|]+)",
+            ]
+            for pat in merchant_patterns:
+                m = re.search(pat, body_text, re.IGNORECASE)
+                if m:
+                    lines = [re.sub(r"\s+", " ", ln).strip(" :.-") for ln in m.group(1).splitlines() if ln.strip()]
+                    if lines:
+                        primary = re.sub(r"\s*[-/]\s*\d{6,}.*$", "", lines[0]).strip()
+                        if len(lines) > 1 and "bank" in lines[1].lower():
+                            bank_dest = re.sub(r"\s*[-/]\s*\d{6,}.*$", "", lines[1]).strip()
+                            candidate = f"{primary} ({bank_dest})"
+                        else:
+                            candidate = primary
+                        if (
+                            candidate
+                            and len(candidate) >= 2
+                            and not re.match(r"^\d+$", candidate)
+                            and candidate.lower() not in ("rp", "idr", "berhasil", "sukses")
+                        ):
+                            merchant = candidate[:80]
+                            break
     # 4. Extract Reference ID
     ref_id = "-"
     ref_patterns = [
@@ -629,10 +641,16 @@ def parse_bank_email_deterministic(
     # Extract merchant location if present
     merchant_location = None
     loc_match = re.search(
-        r"(?:Merchant\s+Location|Lokasi\s+Merchant|Lokasi|Kota)\s*(?:[:\-=]\s*|\n\s*)([^\n\r]+)",
+        r"(?:Merchant\s+Location|Lokasi\s+Merchant|Lokasi|Kota)\s*[:\-=]?\s*([^\n\r]+?)(?=\s+(?:ID\s+Merchant|Terminal\s+ID|Nominal|Total|$))",
         body_text,
         re.IGNORECASE,
     )
+    if not loc_match:
+        loc_match = re.search(
+            r"(?:Merchant\s+Location|Lokasi\s+Merchant|Lokasi|Kota)\s*(?:[:\-=]\s*|\n\s*)([^\n\r]+)",
+            body_text,
+            re.IGNORECASE,
+        )
     if loc_match:
         loc_val = re.sub(r"\s+", " ", loc_match.group(1)).strip(" :.-")
         loc_val = re.sub(r",?\s*\d{5}.*$", "", loc_val).strip(" ,.-")
@@ -785,7 +803,8 @@ async def extract_email_with_ai(
     jenis = (parsed.get("jenis") or "keluar").lower()
     if jenis not in ("masuk", "keluar"):
         jenis = "keluar"
-    akun = parsed.get("akun") or _detect_bank_account(sender, subject, body_text) or "BCA"
+    header_bank = _detect_bank_account(sender, subject, "")
+    akun = header_bank or parsed.get("akun") or _detect_bank_account(sender, subject, body_text) or "BCA"
     merchant = parsed.get("merchant") or "-"
     catatan = parsed.get("catatan") or subject or f"Notifikasi Email {akun}"
     kategori = parsed.get("kategori") or infer_category(merchant, catatan, jenis)
