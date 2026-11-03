@@ -456,6 +456,21 @@ def parse_bank_email_deterministic(
     combined = f"{subject}\n{body_text}"
     combined_low = combined.lower()
 
+    # Ignore failed / unsuccesful transaction emails
+    if any(
+        failed_kw in combined_low
+        for failed_kw in (
+            "status failed",
+            "transaksi gagal",
+            "pembayaran gagal",
+            "status: failed",
+            "status : failed",
+            "status gagal",
+            "transaction failed",
+        )
+    ):
+        return None
+
     # Ignore non-transaction security/OTP/login alert emails
     if any(
         ignore_kw in combined_low
@@ -817,6 +832,22 @@ async def parse_incoming_email(
             "code": verif.get("code"),
             "url": verif.get("url"),
         }
+
+    # 1b. Check if email indicates a failed/unsuccessful transaction
+    probe_failed = f"{subject}\n{combined_body}".lower()
+    if any(
+        failed_kw in probe_failed
+        for failed_kw in (
+            "status failed",
+            "transaksi gagal",
+            "pembayaran gagal",
+            "status: failed",
+            "status : failed",
+            "status gagal",
+            "transaction failed",
+        )
+    ):
+        return {"kind": "ignored", "reason": "Status transaksi gagal / unsuccesful transaction"}
 
     # 2. Try deterministic multi-bank parser
     det = parse_bank_email_deterministic(sender, subject, combined_body, email_date=email_date)
