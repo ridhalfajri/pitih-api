@@ -63,7 +63,19 @@ def is_duplicate_transaction(
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
+        # 1. Check if email was already logged (even if ignored / previously deleted transaction)
         if email_message_id and email_message_id.strip():
+            cursor.execute(
+                "SELECT id, status, transaksi_id FROM email_inbox_log WHERE message_id = ? LIMIT 1",
+                (email_message_id.strip(),),
+            )
+            l_row = cursor.fetchone()
+            if l_row:
+                if l_row["transaksi_id"]:
+                    return int(l_row["transaksi_id"])
+                # If it was logged as ignored / failed, return negative id to signal duplicate/ignore
+                return -1
+
             cursor.execute(
                 "SELECT id FROM transaksi WHERE email_message_id = ? LIMIT 1",
                 (email_message_id.strip(),),
@@ -80,6 +92,136 @@ def is_duplicate_transaction(
             if row:
                 return int(row["id"])
         return None
+    finally:
+        conn.close()
+
+
+def find_matching_manual_transaction(
+    akun: str,
+    jenis: str,
+    nominal: float,
+    tanggal: str,
+    window_hours: int = 12,
+) -> Optional[int]:
+    """
+    Find existing manual/telegram transaction that matches an incoming email transaction
+    (same account, type, exact nominal within +/- window_hours) to avoid duplicate records.
+    """
+    if not akun or not nominal or not tanggal:
+        return None
+    akun_norm = normalize_account_name(akun)
+    jenis_norm = (jenis or "keluar").lower()
+    nom = float(nominal)
+
+    try:
+        dt_target = datetime.strptime(str(tanggal)[:19], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        try:
+            dt_target = datetime.strptime(str(tanggal)[:10], "%Y-%m-%d")
+        except Exception:
+            dt_target = datetime.now()
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, tanggal, created_at, source, email_message_id, ref_id
+            FROM transaksi
+            WHERE akun = ?
+              AND LOWER(jenis) = ?
+              AND ABS(nominal - ?) < 0.01
+              AND (email_message_id IS NULL OR email_message_id = '' OR email_message_id = '-')
+              AND (source IN ('telegram_text', 'telegram_bot', 'manual', 'quick_text') OR source IS NULL)
+            ORDER BY id DESC
+            LIMIT 10
+            """,
+            (akun_norm, jenis_norm, nom),
+        )
+        candidates = cursor.fetchall()
+        for cand in candidates:
+            # Check time delta with transaction tanggal or created_at
+            for cand_date_field in (cand["tanggal"], cand["created_at"]):
+                if not cand_date_field:
+                    continue
+                try:
+                    c_dt = datetime.strptime(str(cand_date_field)[:19], "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    try:
+                        c_dt = datetime.strptime(str(cand_date_field)[:10], "%Y-%m-%d")
+                    except Exception:
+                        continue
+                if abs((dt_target - c_dt).total_seconds()) <= window_hours * 3600:
+                    return int(cand["id"])
+        return None
+    finally:
+        conn.close()
+
+
+def merge_email_into_existing_transaction(
+    tx_id: int,
+    clean_msg_id: str,
+    ref_id: Optional[str] = None,
+    merchant: Optional[str] = None,
+    catatan: Optional[str] = None,
+    saldo_akhir: Optional[float] = None,
+    fingerprint: Optional[str] = None,
+) -> bool:
+    """
+    Enrich an existing manual/telegram transaction with official bank email details
+    without double-deducting account balances or creating a second transaction row.
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM transaksi WHERE id = ?", (tx_id,))
+        existing = cursor.fetchone()
+        if not existing:
+            return False
+
+        updates = []
+        params = []
+
+        updates.append("email_message_id = ?")
+        params.append(clean_msg_id)
+
+        if ref_id and (not existing["ref_id"] or existing["ref_id"] in ("-", "", "None")):
+            updates.append("ref_id = ?")
+            params.append(ref_id)
+
+        if fingerprint and not existing["fingerprint"]:
+            updates.append("fingerprint = ?")
+            params.append(fingerprint)
+
+        if saldo_akhir is not None:
+            updates.append("saldo_akhir = ?")
+            params.append(float(saldo_akhir))
+
+        # If existing merchant is generic or default, update with official bank merchant
+        current_m = (existing["merchant"] or "").strip().lower()
+        if merchant and merchant.strip():
+            m_clean = merchant.strip()
+            if not current_m or current_m in ("-", "lainnya", "pengeluaran", "pemasukan", "qris"):
+                updates.append("merchant = ?")
+                params.append(m_clean)
+
+        # Append official note info if helpful
+        current_cat = (existing["catatan"] or "").strip()
+        if catatan and catatan.strip() and current_cat != catatan.strip():
+            if not current_cat or current_cat in ("-", "quick_expense"):
+                updates.append("catatan = ?")
+                params.append(catatan.strip())
+            elif "qris" in catatan.lower() and "qris" not in current_cat.lower():
+                updates.append("catatan = ?")
+                params.append(f"{current_cat} ({catatan.strip()})")
+
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(tx_id)
+
+        sql = f"UPDATE transaksi SET {', '.join(updates)} WHERE id = ?"
+        cursor.execute(sql, tuple(params))
+        conn.commit()
+        return True
     finally:
         conn.close()
 

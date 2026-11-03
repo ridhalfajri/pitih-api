@@ -10,6 +10,8 @@ from typing import Dict, Any, Optional, List
 from database import (
     compute_tx_fingerprint,
     is_duplicate_transaction,
+    find_matching_manual_transaction,
+    merge_email_into_existing_transaction,
     insert_transaksi,
     get_account_balances,
     get_email_agent_config,
@@ -216,20 +218,56 @@ async def process_raw_email_payload(
 
     dup_tx_id = is_duplicate_transaction(clean_msg_id, fp)
     if dup_tx_id is not None:
+        if dup_tx_id > 0:
+            log_email_event(
+                message_id=clean_msg_id,
+                sender=sender,
+                subject=subject,
+                received_at=effective_received_at,
+                status="duplicate",
+                bank_detected=d["akun"],
+                transaksi_id=dup_tx_id,
+                masked_preview=masked_preview,
+            )
+        return {
+            "status": "duplicate",
+            "message_id": clean_msg_id,
+            "transaksi_id": dup_tx_id,
+            "fingerprint": fp,
+        }
+
+    # Auto-match with existing manual / Telegram transaction (same account & nominal in same timeframe)
+    matched_manual_id = find_matching_manual_transaction(
+        akun=d["akun"],
+        jenis=d["jenis"],
+        nominal=float(d["nominal"]),
+        tanggal=d["tanggal"],
+        window_hours=12,
+    )
+    if matched_manual_id:
+        merge_email_into_existing_transaction(
+            tx_id=matched_manual_id,
+            clean_msg_id=clean_msg_id,
+            ref_id=d.get("ref_id"),
+            merchant=d.get("merchant"),
+            catatan=d.get("catatan"),
+            saldo_akhir=float(d["saldo_akhir"]) if d.get("saldo_akhir") is not None else None,
+            fingerprint=fp,
+        )
         log_email_event(
             message_id=clean_msg_id,
             sender=sender,
             subject=subject,
             received_at=effective_received_at,
-            status="duplicate",
+            status="processed",
             bank_detected=d["akun"],
-            transaksi_id=dup_tx_id,
+            transaksi_id=matched_manual_id,
             masked_preview=masked_preview,
         )
         return {
-            "status": "duplicate",
+            "status": "merged",
             "message_id": clean_msg_id,
-            "transaksi_id": dup_tx_id,
+            "transaksi_id": matched_manual_id,
             "fingerprint": fp,
         }
     dest_akun = None
