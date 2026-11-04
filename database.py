@@ -722,14 +722,12 @@ def detect_destination_account(
         "Jago": ["jago", "bank jago"],
         "GoPay": ["gopay", "gojek"],
         "DANA": ["dana"],
-        "ShopeePay": ["shopeepay", "shopee"],
     }
 
-    # If the transaction explicitly mentions another external e-wallet brand not in registered_map,
-    # prevent false matching to an internal account (e.g. ShopeePay top up must not match OVO)
+    # If the transaction explicitly mentions an external e-wallet / platform not tracked as an active account,
+    # prevent false matching to an internal account
     if any(k in full_probe for k in ("shopeepay", "shopee", "linkaja", "astrapay", "isaku")):
-        if "ShopeePay" not in registered_map:
-            return None
+        return None
 
     # 1. Match 4-digit no_rekening / HP in text
     for canon_acc, r_data in registered_map.items():
