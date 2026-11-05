@@ -753,19 +753,28 @@ def detect_destination_account(
     merchant_low = (merchant or "").lower()
     catatan_low = (catatan or "").lower()
 
+    def _contains_account_keyword(target_text: str, kws: List[str]) -> bool:
+        if not target_text:
+            return False
+        for kw in kws:
+            pattern = r"(?:\b|_)" + re.escape(kw) + r"(?:\b|_)"
+            if re.search(pattern, target_text, re.IGNORECASE):
+                return True
+        return False
+
     # 2. Check merchant text
     for canon_acc in registered_map.keys():
         if canon_acc == src_norm:
             continue
         kws = account_keywords.get(canon_acc, [canon_acc.lower()])
-        if any(kw in merchant_low for kw in kws):
+        if _contains_account_keyword(merchant_low, kws):
             return canon_acc
     # 3. Check catatan text
     for canon_acc in registered_map.keys():
         if canon_acc == src_norm:
             continue
         kws = account_keywords.get(canon_acc, [canon_acc.lower()])
-        if any(kw in catatan_low for kw in kws):
+        if _contains_account_keyword(catatan_low, kws):
             return canon_acc
 
     # 4. Check destination headers in body text
@@ -780,7 +789,7 @@ def detect_destination_account(
             if canon_acc == src_norm:
                 continue
             kws = account_keywords.get(canon_acc, [canon_acc.lower()])
-            if any(kw in line_low for kw in kws):
+            if _contains_account_keyword(line_low, kws):
                 return canon_acc
 
     return None
