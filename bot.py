@@ -466,41 +466,8 @@ async def handle_text_message(message: dict):
             await send_message(chat_id, f"⚠️ Transaksi #{tx_id} tidak ditemukan di database.")
             return
 
-    # If not an explicit reply, check if there's a recent QRIS transaction within 15 minutes
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM transaksi WHERE (LOWER(catatan) LIKE '%qris%' OR LOWER(merchant) LIKE '%qris%') ORDER BY id DESC LIMIT 1"
-        )
-        recent_qris = cursor.fetchone()
-        conn.close()
-
-        if recent_qris:
-            created_str = recent_qris["created_at"] or recent_qris["tanggal"]
-            if created_str:
-                created_dt = datetime.strptime(str(created_str)[:19], "%Y-%m-%d %H:%M:%S")
-                diff_sec = (datetime.now() - created_dt).total_seconds()
-                if 0 <= diff_sec <= 900:  # 15 minutes
-                    tx_id = int(recent_qris["id"])
-                    current_merchant = recent_qris["merchant"]
-                    updated_category = infer_category(current_merchant, text, recent_qris["jenis"] or "keluar")
-                    if not updated_category or updated_category == "Lainnya":
-                        updated_category = recent_qris["kategori"] or "Belanja & Retail"
-                    update_transaksi(tx_id, {"catatan": text, "kategori": updated_category})
-                    reply = (
-                        f"✅ *Rincian Transaksi QRIS #{tx_id} Diperbarui!*\n\n"
-                        f"• *Merchant:* {current_merchant}\n"
-                        f"• *Catatan/Barang:* {text}\n"
-                        f"• *Kategori:* {updated_category}\n\n"
-                        f"📊 _Dashboard Pitih telah diperbarui._"
-                    )
-                    await send_message(chat_id, reply)
-                    return
-    except Exception as e:
-        print(f"[TelegramBot] Error matching recent QRIS transaction: {e}")
-
-    # Check if text is a quick expense/income note (e.g. "Makan padang 25rb bca" or "Parkir 2000 cash")
+    # 1. Check if text is a quick expense/income note (e.g. "Makan padang 25rb bca" or "Parkir 2000 cash")
+    # MUST be checked BEFORE fuzzy recent QRIS matching, so clear expense notes (with nominal) are always recorded as transactions!
     quick = parse_quick_expense_text(text)
     if quick:
         now_dt = datetime.now()
@@ -553,6 +520,40 @@ async def handle_text_message(message: dict):
         )
         await send_message(chat_id, reply)
         return
+
+    # 2. If not an explicit reply and not a new transaction note, check if there's a recent QRIS transaction within 15 minutes to annotate
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM transaksi WHERE (LOWER(catatan) LIKE '%qris%' OR LOWER(merchant) LIKE '%qris%') ORDER BY id DESC LIMIT 1"
+        )
+        recent_qris = cursor.fetchone()
+        conn.close()
+
+        if recent_qris:
+            created_str = recent_qris["created_at"] or recent_qris["tanggal"]
+            if created_str:
+                created_dt = datetime.strptime(str(created_str)[:19], "%Y-%m-%d %H:%M:%S")
+                diff_sec = (datetime.now() - created_dt).total_seconds()
+                if 0 <= diff_sec <= 900:  # 15 minutes
+                    tx_id = int(recent_qris["id"])
+                    current_merchant = recent_qris["merchant"]
+                    updated_category = infer_category(current_merchant, text, recent_qris["jenis"] or "keluar")
+                    if not updated_category or updated_category == "Lainnya":
+                        updated_category = recent_qris["kategori"] or "Belanja & Retail"
+                    update_transaksi(tx_id, {"catatan": text, "kategori": updated_category})
+                    reply = (
+                        f"✅ *Rincian Transaksi QRIS #{tx_id} Diperbarui!*\n\n"
+                        f"• *Merchant:* {current_merchant}\n"
+                        f"• *Catatan/Barang:* {text}\n"
+                        f"• *Kategori:* {updated_category}\n\n"
+                        f"📊 _Dashboard Pitih telah diperbarui._"
+                    )
+                    await send_message(chat_id, reply)
+                    return
+    except Exception as e:
+        print(f"[TelegramBot] Error matching recent QRIS transaction: {e}")
 
     reply = (
         "📸 *Kirimkan foto struk pembayaran atau ketik pengeluaran santai!*\n\n"
