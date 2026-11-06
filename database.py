@@ -1059,6 +1059,7 @@ def get_transaksi_list(
     search: Optional[str] = None,
     bank: Optional[str] = None,
     jenis: Optional[str] = None,
+    kategori: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     page: int = 1,
@@ -1071,9 +1072,9 @@ def get_transaksi_list(
     params = []
     
     if search:
-        query += " AND (merchant LIKE ? OR catatan LIKE ? OR ref_id LIKE ? OR akun LIKE ?)"
+        query += " AND (merchant LIKE ? OR catatan LIKE ? OR ref_id LIKE ? OR akun LIKE ? OR kategori LIKE ?)"
         s = f"%{search}%"
-        params.extend([s, s, s, s])
+        params.extend([s, s, s, s, s])
         
     if bank and bank.lower() != "all" and bank.lower() != "semua":
         query += " AND akun LIKE ?"
@@ -1082,6 +1083,10 @@ def get_transaksi_list(
     if jenis and jenis.lower() != "all" and jenis.lower() != "semua":
         query += " AND jenis = ?"
         params.append(jenis.lower())
+
+    if kategori and kategori.lower() != "all" and kategori.lower() != "semua":
+        query += " AND kategori = ?"
+        params.append(kategori.strip())
         
     if start_date:
         query += " AND tanggal >= ?"
