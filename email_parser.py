@@ -868,6 +868,37 @@ async def parse_incoming_email(
     ):
         return {"kind": "ignored", "reason": "Status transaksi gagal / unsuccesful transaction"}
 
+    # 1c. Ignore marketing / promotional / newsletter emails from banks (e.g. info@jago.com, promo BCA, newsletter)
+    probe_marketing = f"{sender}\n{subject}".lower()
+    if any(
+        m_kw in probe_marketing
+        for m_kw in (
+            "info@jago.com",
+            "newsletter",
+            "promo",
+            "penawaran spesial",
+            "tertarik nabung",
+            "bunga spesial",
+            "ajak teman",
+            "cashback",
+            "diskon",
+        )
+    ) and not any(
+        tx_kw in f"{subject}\n{combined_body[:500]}".lower()
+        for tx_kw in (
+            "berhasil transfer",
+            "transfer berhasil",
+            "pembayaran berhasil",
+            "transaksi berhasil",
+            "berhasil bayar",
+            "bukti transfer",
+            "bukti transaksi",
+            "rincian transfer",
+            "qris payment",
+        )
+    ):
+        return {"kind": "ignored", "reason": "Email promo/iklan/newsletter perbankan (bukan bukti transaksi)"}
+
     # 2. Try deterministic multi-bank parser
     det = parse_bank_email_deterministic(sender, subject, combined_body, email_date=email_date)
     if det and float(det.get("nominal") or 0) > 0:
